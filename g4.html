@@ -1,0 +1,1801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pangolin Rush 4</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+  #ui { pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="gl" tabindex="0"></canvas>
+<canvas id="ui"></canvas>
+<script>
+(function () {
+  "use strict";
+  // =====================================================================
+  //  PANGOLIN RUSH 4  -  a hand-written WebGL 3D speed platformer
+  //  All characters, names and art are original.
+  // =====================================================================
+  var cv = document.getElementById("gl"), ui = document.getElementById("ui"), cx = ui.getContext("2d");
+  var gl = cv.getContext("webgl", { antialias: true }) || cv.getContext("experimental-webgl");
+  var W = 0, H = 0, k = 1, VW = 424;
+  function fit() { W = innerWidth || 800; H = innerHeight || 450; cv.width = W; cv.height = H; ui.width = W; ui.height = H; k = H / 240; VW = W / k; }
+  fit(); addEventListener("resize", fit);
+  if (!gl) { cx.fillStyle = "#fff"; cx.font = "20px monospace"; cx.fillText("WebGL isn't available in this browser.", 20, 40); return; }
+
+  // ---------------------------------------------------------------- math
+  function mul(a, b) { var o = new Array(16), c, r, s, i; for (c = 0; c < 4; c++) for (r = 0; r < 4; r++) { s = 0; for (i = 0; i < 4; i++) s += a[i * 4 + r] * b[c * 4 + i]; o[c * 4 + r] = s; } return o; }
+  function X() { var m = arguments[0]; for (var i = 1; i < arguments.length; i++) m = mul(m, arguments[i]); return m; }
+  function T(x, y, z) { return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]; }
+  function S(x, y, z) { if (y === undefined) { y = x; z = x; } return [x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]; }
+  function RY(a) { var c = Math.cos(a), s = Math.sin(a); return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]; }
+  function RX(a) { var c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]; }
+  function RZ(a) { var c = Math.cos(a), s = Math.sin(a); return [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]; }
+  function persp(fy, a, n, f) { var t = 1 / Math.tan(fy / 2); return [t / a, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0]; }
+  function norm(v) { var l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+  function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function lookAt(e, t, u) {
+    var z = norm([e[0] - t[0], e[1] - t[1], e[2] - t[2]]), x = norm(cross(u, z)), y = cross(z, x);
+    return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, e), -dot(y, e), -dot(z, e), 1];
+  }
+  function angDiff(a, b) { return Math.atan2(Math.sin(a - b), Math.cos(a - b)); }
+  function hex(n) { return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; }
+  function shade(c, f) { return [c[0] * f, c[1] * f, c[2] * f]; }
+
+  // ---------------------------------------------------------------- shaders
+  var VS = "attribute vec3 aP; attribute vec3 aN; uniform mat4 uM; uniform mat4 uVP; varying vec3 vN; varying vec3 vW;" +
+    "void main(){ vec4 w = uM * vec4(aP, 1.0); vW = w.xyz; vN = (uM * vec4(aN, 0.0)).xyz; gl_Position = uVP * w; }";
+  var FS = "precision mediump float; varying vec3 vN; varying vec3 vW;" +
+    "uniform vec3 uC; uniform vec3 uCam; uniform vec3 uFog; uniform float uK; uniform float uE; uniform float uFN; uniform float uFF; uniform vec3 uG1; uniform vec3 uG2; uniform vec3 uW1; uniform vec3 uW2;" +
+    "void main(){ vec3 n = normalize(vN); vec3 base = uC;" +
+    " if (uK > 0.5) {" +
+    "  if (n.y > 0.6) { float t = mod(floor(vW.x * 0.5) + floor(vW.z * 0.5), 2.0); base = t > 0.5 ? uG1 : uG2; }" +
+    "  else { float s = mod(floor(vW.y) + floor((vW.x + vW.z) * 0.5), 2.0); base = s > 0.5 ? uW1 : uW2; }" +
+    " }" +
+    " float d = max(dot(n, normalize(vec3(0.4, 0.9, 0.3))), 0.0);" +
+    " vec3 c = base * (0.42 + 0.62 * d) + base * uE;" +
+    " float f = clamp((length(vW - uCam) - uFN) / (uFF - uFN), 0.0, 1.0);" +
+    " gl_FragColor = vec4(mix(c, uFog, f), 1.0); }";
+  function sh(type, src) { var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  var prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  var aP = gl.getAttribLocation(prog, "aP"), aN = gl.getAttribLocation(prog, "aN");
+  gl.enableVertexAttribArray(aP); gl.enableVertexAttribArray(aN);
+  var U = {}; ["uM", "uVP", "uC", "uCam", "uFog", "uK", "uE", "uFN", "uFF", "uG1", "uG2", "uW1", "uW2"].forEach(function (n) { U[n] = gl.getUniformLocation(prog, n); });
+
+  // ---------------------------------------------------------------- meshes
+  function mesh(P, N) {
+    var a = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, a); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(P), gl.STATIC_DRAW);
+    var b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(N), gl.STATIC_DRAW);
+    return { p: a, n: b, c: P.length / 3 };
+  }
+  function cubeMesh() {
+    var P = [], N = [];
+    [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].forEach(function (n) {
+      var u = n[1] !== 0 ? [1, 0, 0] : [0, 1, 0], v = cross(n, u), c = [n[0] * 0.5, n[1] * 0.5, n[2] * 0.5];
+      function pt(a, b) { return [c[0] + u[0] * a + v[0] * b, c[1] + u[1] * a + v[1] * b, c[2] + u[2] * a + v[2] * b]; }
+      [pt(-0.5, -0.5), pt(0.5, -0.5), pt(0.5, 0.5), pt(-0.5, -0.5), pt(0.5, 0.5), pt(-0.5, 0.5)].forEach(function (q) { P.push(q[0], q[1], q[2]); N.push(n[0], n[1], n[2]); });
+    });
+    return mesh(P, N);
+  }
+  function sphereMesh(sl, st) {
+    var P = [], N = [];
+    function v(i, j) { var th = i / st * Math.PI, ph = j / sl * Math.PI * 2; return [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]; }
+    for (var i = 0; i < st; i++) for (var j = 0; j < sl; j++) {
+      var a = v(i, j), b = v(i + 1, j), c = v(i + 1, j + 1), d = v(i, j + 1);
+      [a, b, c, a, c, d].forEach(function (q) { P.push(q[0], q[1], q[2]); N.push(q[0], q[1], q[2]); });
+    }
+    return mesh(P, N);
+  }
+  function torusMesh(R, r, A, B) {
+    var P = [], N = [];
+    function v(i, j) { var u = i / A * Math.PI * 2, w = j / B * Math.PI * 2; return [[(R + r * Math.cos(w)) * Math.cos(u), (R + r * Math.cos(w)) * Math.sin(u), r * Math.sin(w)], [Math.cos(w) * Math.cos(u), Math.cos(w) * Math.sin(u), Math.sin(w)]]; }
+    for (var i = 0; i < A; i++) for (var j = 0; j < B; j++) {
+      var a = v(i, j), b = v(i + 1, j), c = v(i + 1, j + 1), d = v(i, j + 1);
+      [a, b, c, a, c, d].forEach(function (q) { P.push(q[0][0], q[0][1], q[0][2]); N.push(q[1][0], q[1][1], q[1][2]); });
+    }
+    return mesh(P, N);
+  }
+  function coneMesh(n) {
+    var P = [], N = [];
+    for (var i = 0; i < n; i++) {
+      var a0 = i / n * Math.PI * 2, a1 = (i + 1) / n * Math.PI * 2, b0 = [Math.cos(a0), 0, Math.sin(a0)], b1 = [Math.cos(a1), 0, Math.sin(a1)];
+      var n0 = norm([b0[0], 0.5, b0[2]]), n1 = norm([b1[0], 0.5, b1[2]]), nt = norm([(b0[0] + b1[0]) / 2, 0.5, (b0[2] + b1[2]) / 2]);
+      P.push(0, 1, 0, b1[0], 0, b1[2], b0[0], 0, b0[2]); N.push(nt[0], nt[1], nt[2], n1[0], n1[1], n1[2], n0[0], n0[1], n0[2]);
+      P.push(0, 0, 0, b0[0], 0, b0[2], b1[0], 0, b1[2]); N.push(0, -1, 0, 0, -1, 0, 0, -1, 0);
+    }
+    return mesh(P, N);
+  }
+  var CUBE = cubeMesh(), SPH = sphereMesh(14, 9), TOR = torusMesh(1, 0.2, 18, 6), CONE = coneMesh(8);
+  function draw(m, M, col, K, E) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, m.p); gl.vertexAttribPointer(aP, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, m.n); gl.vertexAttribPointer(aN, 3, gl.FLOAT, false, 0, 0);
+    gl.uniformMatrix4fv(U.uM, false, new Float32Array(M)); gl.uniform3fv(U.uC, col);
+    gl.uniform1f(U.uK, K || 0); gl.uniform1f(U.uE, E || 0);
+    gl.drawArrays(gl.TRIANGLES, 0, m.c);
+  }
+
+  // ---------------------------------------------------------------- audio (tiny beeps)
+  var AC = null, muted = false;
+  function unlockAudio() {
+    if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+    if (AC && AC.state === "suspended") AC.resume();
+  }
+  function tone(f, d, type, f2, v, delay) {
+    if (!AC || muted) return;
+    var t = AC.currentTime + (delay || 0), o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || "square"; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+    g.gain.setValueAtTime(v || 0.07, t); g.gain.exponentialRampToValueAtTime(0.001, t + d);
+    o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + d + 0.03);
+  }
+  var SND = {
+    jump: function () { tone(320, 0.14, "square", 660, 0.06); },
+    spark: function () { tone(1320, 0.05, "sine", 0, 0.08); tone(1980, 0.12, "sine", 0, 0.08, 0.05); },
+    lose: function () { for (var i = 0; i < 5; i++) tone(1500 - i * 150, 0.08, "triangle", 0, 0.06, i * 0.04); },
+    pop: function () { tone(200, 0.15, "sawtooth", 60, 0.08); tone(900, 0.06, "square", 400, 0.05); },
+    spring: function () { tone(180, 0.3, "sine", 900, 0.09); },
+    dash: function () { tone(150, 0.18, "sawtooth", 500, 0.06); },
+    pound: function () { tone(110, 0.3, "sawtooth", 40, 0.1); },
+    heart: function () { tone(660, 0.08, "triangle", 0, 0.07); tone(990, 0.12, "triangle", 0, 0.07, 0.06); },
+    item: function () { tone(523, 0.08, "square", 0, 0.05); tone(784, 0.08, "square", 0, 0.05, 0.08); tone(1046, 0.15, "square", 0, 0.05, 0.16); },
+    boost: function () { tone(90 + Math.random() * 30, 0.1, "sawtooth", 0, 0.035); },
+    heat: function () { tone(900, 0.1, "square", 300, 0.07); tone(900, 0.1, "square", 300, 0.07, 0.15); },
+    die: function () { tone(500, 0.6, "square", 80, 0.08); },
+    ok: function () { tone(880, 0.07, "square", 0, 0.05); tone(1320, 0.1, "square", 0, 0.05, 0.07); },
+    tick: function () { tone(660, 0.04, "square", 0, 0.04); },
+    no: function () { tone(160, 0.2, "square", 120, 0.07); },
+    post: function () { tone(784, 0.1, "triangle", 0, 0.07); tone(1175, 0.2, "triangle", 0, 0.07, 0.1); },
+    goal: function () { [523, 659, 784, 1046, 784, 1046].forEach(function (f, i) { tone(f, 0.16, "square", 0, 0.06, i * 0.12); }); }
+  };
+  function snd(n) { if (SND[n]) SND[n](); }
+
+  // ---------------------------------------------------------------- input
+  var keys = {}, pressed = {}, cheatBuf = "", drag = false;
+  var MAP = { ArrowLeft: "tl", KeyA: "l", ArrowRight: "tr", KeyD: "r", ArrowUp: "u", KeyW: "u", ArrowDown: "dn", KeyS: "dn",
+    Space: "j", KeyJ: "j", KeyZ: "j", Enter: "e", ShiftLeft: "roll", ShiftRight: "roll", ControlLeft: "roll", ControlRight: "roll", KeyC: "roll",
+    KeyX: "x", KeyK: "x", KeyV: "su", KeyU: "su", KeyQ: "cl", KeyE: "cr", KeyM: "m", KeyP: "p", Escape: "esc" };
+  addEventListener("keydown", function (e) {
+    unlockAudio();
+    if (state === "title" && /^Key[A-Z]$/.test(e.code) && !e.repeat) {
+      cheatBuf = (cheatBuf + e.code.charAt(3)).slice(-5);
+      if (cheatBuf === "COMET") { cheatBuf = ""; setUnlocked(); cheatMsg = 150; snd("item"); }
+      if (cheatBuf === "SHARD") { cheatBuf = ""; shards = 7; try { localStorage.setItem("pr4_shards", "7"); } catch (e2) {} cheatMsg2 = 150; snd("item"); }
+      if (cheatBuf === "WARPS") { cheatBuf = ""; maxZone = 5; try { localStorage.setItem("pr4_zone", "5"); } catch (e2) {} cheatMsg3 = 150; snd("item"); }
+    }
+    var m = MAP[e.code]; if (!m) return;
+    e.preventDefault(); if (!keys[m]) pressed[m] = true; keys[m] = true;
+  });
+  addEventListener("keyup", function (e) { var m = MAP[e.code]; if (m) { keys[m] = false; e.preventDefault(); } });
+  addEventListener("blur", function () { keys = {}; });
+  addEventListener("pointerdown", function () { unlockAudio(); drag = true; try { cv.focus(); } catch (e) {} });
+  addEventListener("pointerup", function () { drag = false; });
+  addEventListener("pointermove", function (e) { if (drag && e.buttons) cam.yaw -= (e.movementX || 0) * 0.006; });
+
+  // ---------------------------------------------------------------- save: Nova unlock, zones, shards
+  var ALLSH = 7, unlocked = false, cheatMsg = 0, cheatMsg2 = 0, cheatMsg3 = 0, newUnlock = false, spGo = false;
+  try { unlocked = localStorage.getItem("pr4_nova") === "1"; } catch (e) { unlocked = false; }
+  var maxZone = 0; try { maxZone = Math.min(5, parseInt(localStorage.getItem("pr4_zone"), 10) || 0); } catch (e) { maxZone = 0; }
+  function saveZone(n) { if (n > maxZone) { maxZone = n; try { localStorage.setItem("pr4_zone", String(n)); } catch (e) {} } }
+  var shards = 0; try { shards = (parseInt(localStorage.getItem("pr4_shards"), 10) || 0) & 7; } catch (e) { shards = 0; }
+  function addShard(i) { shards |= 1 << i; try { localStorage.setItem("pr4_shards", String(shards)); } catch (e) {} }
+  function shardCount() { var n = 0; for (var i = 0; i < 3; i++) if (shards & (1 << i)) n++; return n; }
+  function setUnlocked() { unlocked = true; try { localStorage.setItem("pr4_nova", "1"); } catch (e) {} }
+
+  // ---------------------------------------------------------------- characters
+  var CH = [
+    { n: "PIP", col: hex(0x1fb5a5), bel: hex(0xf3e3b5), shoe: hex(0xe23b3b), top: 0.45, acc: 0.0105, jump: 0.42, ab: ["The fastest runner.", "Jump again in the air:", "SCALE DASH"] },
+    { n: "JUNO", col: hex(0xe8892b), bel: hex(0xfbe8c4), shoe: hex(0xa85a14), top: 0.405, acc: 0.011, jump: 0.42, ab: ["Hold jump to GLIDE.", "Shift in the air:", "DIVE"] },
+    { n: "SPIKES", col: hex(0x8a5a34), bel: hex(0xe8d2a8), shoe: hex(0x3a3a3a), top: 0.3825, acc: 0.0095, jump: 0.445, ab: ["Shift in air: POUND", "X: QUILL BURST", "Tough as nails."] },
+    { n: "SUZIE", col: hex(0xff7a9a), bel: hex(0xffe4ea), shoe: hex(0xff2d6a), top: 0.414, acc: 0.011, jump: 0.42, ab: ["Jump again in the air:", "HEART HOP", "(a double jump)"] },
+    { n: "KAI", col: hex(0x3fcf5a), bel: hex(0xfff0a0), shoe: hex(0x2a7fff), top: 0.42, acc: 0.0112, jump: 0.43, ab: ["NEW! A chameleon with a long reach.", "X: TONGUE ZIP", "Zips onto the nearest foe or box."] },
+    { n: "NOVA", col: hex(0x2a2f5a), bel: hex(0xffe27a), shoe: hex(0xff7a2a), top: 0.4725, acc: 0.0105, jump: 0.42, ab: ["A robot pangolin made of star metal.", "Hold jump: STAR HOVER", "Hold X: STARDRIVE BOOST"] },
+    { n: "PROTO PIP", col: hex(0xc8d0d8), bel: hex(0x8a96a2), shoe: hex(0x5a6470), top: 0.4725, acc: 0.0105, jump: 0.42, vis: [1, 0.1, 0.1], ab: ["Pip's old robot rival is back.", "Hold X: OVERDRIVE BOOST", "Watch the heat!"] }
+  ];
+  var ITEMCOL = { s: hex(0xffd23f), h: hex(0x3aa0ff), f: hex(0xff4040), u: hex(0x1fb5a5), i: hex(0xffffff) };
+  var ITEMNAME = { s: "+10 SPARKS", h: "SHIELD", f: "SPEED SHOES", u: "1-UP", i: "INVINCIBLE" };
+
+  // ---------------------------------------------------------------- level: Seabreeze Heights
+  var boxes, rings, loose, enemies, items, springs, posts, pillars, goal, parts, popups, clouds, isles, movers, spikes, pads, decor, warps, launchers, geysers, hoops, segs, cum = 0, GRAV = 0.022;
+  var DIRS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+  function addBox(x0, x1, z0, z1, ya, yb, ax, s0, L, sg, kind) {
+    var b = { x0: Math.min(x0, x1), x1: Math.max(x0, x1), z0: Math.min(z0, z1), z1: Math.max(z0, z1), ya: ya, yb: yb, ax: ax, s0: s0, L: L, sg: sg, kind: kind };
+    b.bot = Math.min(ya, yb) - 1; boxes.push(b); return b;
+  }
+  function topOf(b, x, z) {
+    if (b.ya === b.yb) return b.ya;
+    var t = ((b.ax === "x" ? x : z) - b.s0) * b.sg / b.L; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return b.ya + (b.yb - b.ya) * t;
+  }
+  var hitBox = null;
+  function inBox(b, x, z, m) { return x > b.x0 - m && x < b.x1 + m && z > b.z0 - m && z < b.z1 + m; }
+  function floorTop(x, z, ymax) {
+    var best = -1e9; hitBox = null;
+    for (var i = 0; i < boxes.length; i++) { var b = boxes[i]; if (inBox(b, x, z, 0.2)) { var t = topOf(b, x, z); if (t <= ymax && t > best) { best = t; hitBox = b; } } }
+    if (ribs.length) { var tt = trackTop(x, z, ymax); if (tt > best) { best = tt; hitBox = trkHit; curLat = trkLat; curW = trkW; } }
+    return best;
+  }
+  function wall(x, z, y) {
+    for (var i = 0; i < boxes.length; i++) { var b = boxes[i]; if (inBox(b, x, z, 0.2)) { var t = topOf(b, x, z); if (t > y + 0.6 && (b.kind === "path" || b.kind === "wall" || b.bot < y + 1.5)) return true; } }
+    return false;
+  }
+  var tx, tz, ty, td, wps = [];
+  function seg(o) {
+    var w = o.w || 8, d = DIRS[td], i;
+    if (o.gap) {
+      for (i = 1; i <= (o.plats || 0); i++) {
+        var f = i / (o.plats + 1), px = tx + d[0] * o.gap * f, pz = tz + d[1] * o.gap * f, py = ty + (o.platY || 0);
+        var pb = addBox(px - 1.7, px + 1.7, pz - 1.7, pz + 1.7, py, py, "x", 0, 1, 1, "plat"); pb.dA = cum + o.gap * f;
+      }
+      for (i = 1; i <= (o.mov || 0); i++) {
+        var fm = i / (o.mov + 1), mx0 = tx + d[0] * o.gap * fm, mz0 = tz + d[1] * o.gap * fm, my = ty + (o.platY || 0);
+        var mb = addBox(mx0 - 2.2, mx0 + 2.2, mz0 - 2.2, mz0 + 2.2, my, my, "x", 0, 1, 1, "mov");
+        mb.dA = cum + o.gap * fm; mb.mv = { cx: mx0, cz: mz0, lx: d[0], lz: d[1], amp: o.amp || 2.2, sp: o.msp || 0.028, ph: i * 2.1, dx: 0, dz: 0 }; movers.push(mb);
+      }
+      segs.push({ d0: cum, L: o.gap, x: tx, z: tz, dx: d[0], dz: d[1], y0: ty, y1: ty + (o.gapRise || 0) }); cum += o.gap;
+      tx += d[0] * o.gap; tz += d[1] * o.gap; ty += o.gapRise || 0;
+    }
+    if (o.step) ty += o.step;
+    if (o.turn) { var tb = addBox(tx - w / 2, tx + w / 2, tz - w / 2, tz + w / 2, ty, ty, "x", 0, 1, 1, "path"); tb.dA = cum; tb.turnBox = true; td = (td + o.turn + 4) % 4; d = DIRS[td]; }
+    var L = o.len, rise = o.rise || 0, ex = tx + d[0] * L, ez = tz + d[1] * L, ax = d[0] ? "x" : "z", sg = d[0] || d[1];
+    var lx = d[1], lz = -d[0]; // sideways
+    var b = ax === "x" ? addBox(tx, ex, tz - w / 2, tz + w / 2, ty, ty + rise, ax, tx, L, sg, "path") : addBox(tx - w / 2, tx + w / 2, tz, ez, ty, ty + rise, ax, tz, L, sg, "path");
+    b.w = w; b.dA = cum; if (o.board) b.board = true;
+    segs.push({ d0: cum, L: L, x: tx, z: tz, dx: d[0], dz: d[1], y0: ty, y1: ty + rise });
+    function at(t, lat) { var x = tx + d[0] * L * t + lx * lat, z = tz + d[1] * L * t + lz * lat; return { x: x, z: z, y: topOf(b, x, z) }; }
+    for (i = 0; i < (o.rings || 0); i++) { var t = (i + 1) / (o.rings + 1), q = at(t, Math.sin(i * 0.9 + tx) * 1.5); rings.push({ x: q.x, y: q.y + 1.1, z: q.z, got: false }); }
+    (o.en || []).forEach(function (e) { var q = at(e[0], e[1]); enemies.push({ hov: Z.hover || 0, bx: q.x, bz: q.z, x: q.x, y: q.y, z: q.z, px: lx, pz: lz, r: Math.max(0.5, w / 2 - 1.6 - Math.abs(e[1]) * 0.5), t: Math.random() * 6, alive: true, face: 0 }); });
+    (o.items || []).forEach(function (e) { var q = at(e[0], e[2]); items.push({ x: q.x, y: q.y, z: q.z, type: e[1], open: false }); });
+    (o.spikes || []).forEach(function (e) { var q = at(e[0], e[1]); spikes.push({ x: q.x, y: q.y, z: q.z }); });
+    (o.pads || []).forEach(function (e) { var q = at(e[0], e[1]); pads.push({ x: q.x, y: q.y, z: q.z, h: Math.atan2(d[0], d[1]), t: 0 }); });
+    (o.geysers || []).forEach(function (e, gi) { var q = at(e[0], e[1]); geysers.push({ x: q.x, y: q.y, z: q.z, ph: (gi * 53 + Math.floor(e[0] * 100)) % 150 }); });
+    (o.hoops || []).forEach(function (e) { var q = at(e[0], e[1] || 0); hoops.push({ x: q.x, y: q.y + 2.2, z: q.z, h: Math.atan2(d[0], d[1]), t: 0 }); });
+    if (o.spring) { var q = at(o.spring[0], o.spring[1]); springs.push({ x: q.x, y: q.y, z: q.z, t: 0 }); }
+    if (o.post !== undefined) { var q2 = at(o.post, w / 2 - 1); posts.push({ x: q2.x, y: q2.y, z: q2.z, h: Math.atan2(d[0], d[1]), on: false }); }
+    if (o.secret) {
+      var sd = o.secret[1], qs = at(o.secret[0], sd * (w / 2 - 0.9)), ql = at(o.secret[0] + 0.06, sd * (w / 2 + 3)), ly = ql.y + 8;
+      addBox(ql.x - 2.2, ql.x + 2.2, ql.z - 2.2, ql.z + 2.2, ly, ly, "x", 0, 1, 1, "plat");
+      launchers.push({ x: qs.x, y: qs.y, z: qs.z, tx: ql.x, ty: ly, tz: ql.z, t: 0 });
+      warps.push({ x: ql.x, y: ly, z: ql.z, used: false });
+      for (var si = 0; si < 3; si++) rings.push({ x: ql.x + (si - 1) * 1.2 * lx, y: ly + 1.1, z: ql.z + (si - 1) * 1.2 * lz, got: false });
+    }
+    if (o.goal) { var g = at(0.88, 0); goal = { x: g.x, y: g.y, z: g.z, spin: 0 }; }
+    for (var pp = 8; pp < L; pp += 18) { var q3 = at(pp / L, 0); pillars.push({ x: q3.x, z: q3.z, top: q3.y - 1 }); }
+    wps.push({ x: ex, z: ez });
+    tx = ex; tz = ez; ty += rise; cum += L;
+  }
+  // ---------------------------------------------------------------- PR4 spline tracks: winding curves, banked turns, loops, split routes
+  var C = [], ribs = [], tgrid = {}, loopsL = [], forks = [], GC = 4, trkHit = null, trkLat = 0, trkW = 8, curLat = 0, curW = 8;
+  function smooth(a, b, t) { t = Math.max(0, Math.min(1, (t - a) / (b - a))); return t * t * (3 - 2 * t); }
+  function gkey(i, j) { return i * 100003 + j; }
+  function finishPts(P) {
+    for (var i = 0; i < P.length; i++) {
+      var a = P[Math.max(0, i - 1)], b = P[Math.min(P.length - 1, i + 1)], d = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+      P[i].h = Math.atan2(b.x - a.x, b.z - a.z); P[i].sl = (b.y - a.y) / d;
+    }
+  }
+  function ribAdd(P, kind) {
+    if (P.length < 2) return;
+    var r = { pts: P, kind: kind }; ribs.push(r);
+    for (var i = 0; i < P.length - 1; i++) {
+      var a = P[i], b = P[i + 1], m = Math.max(a.w, b.w) / 2 + 1.5;
+      var i0 = Math.floor((Math.min(a.x, b.x) - m) / GC), i1 = Math.floor((Math.max(a.x, b.x) + m) / GC), j0 = Math.floor((Math.min(a.z, b.z) - m) / GC), j1 = Math.floor((Math.max(a.z, b.z) + m) / GC);
+      for (var gi = i0; gi <= i1; gi++) for (var gj = j0; gj <= j1; gj++) { var kk = gkey(gi, gj); (tgrid[kk] = tgrid[kk] || []).push(r, i); }
+    }
+  }
+  function trackTop(x, z, ymax) {
+    var Lc = tgrid[gkey(Math.floor(x / GC), Math.floor(z / GC))], best = -1e9; trkHit = null; if (!Lc) return best;
+    for (var n = 0; n < Lc.length; n += 2) {
+      var r = Lc[n], i = Lc[n + 1], a = r.pts[i], b = r.pts[i + 1];
+      var dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz || 1, u = ((x - a.x) * dx + (z - a.z) * dz) / l2;
+      if (u < -0.2 || u > 1.2) continue;
+      u = u < 0 ? 0 : u > 1 ? 1 : u;
+      var px = a.x + dx * u, pz = a.z + dz * u, hh = Math.atan2(dx, dz), lat = (x - px) * Math.cos(hh) - (z - pz) * Math.sin(hh);
+      var w = a.w + (b.w - a.w) * u; if (Math.abs(lat) > w / 2 + (a.curb ? 1.2 : 0.2)) continue;
+      var bk = a.bk + (b.bk - a.bk) * u, y = a.y + (b.y - a.y) * u + lat * Math.sin(bk);
+      if (y <= ymax && y > best) { best = y; trkHit = a; trkLat = lat; trkW = w; }
+    }
+    return best;
+  }
+  function loopPos(lp, th, r) {
+    var fw = r * Math.sin(th), up = lp.R - r * Math.cos(th), la = lp.sh * smooth(0, 1, th / (Math.PI * 2));
+    return { x: lp.x + Math.sin(lp.h) * fw + Math.cos(lp.h) * la, y: lp.y + up, z: lp.z + Math.cos(lp.h) * fw - Math.sin(lp.h) * la };
+  }
+  function placeObjs(o, P, main) {
+    if (!o || P.length < 2) return;
+    function at(t, lat) {
+      var c = P[Math.max(0, Math.min(P.length - 1, Math.round(t * (P.length - 1))))];
+      return { x: c.x + Math.cos(c.h) * lat, y: c.y + lat * Math.sin(c.bk || 0), z: c.z - Math.sin(c.h) * lat, h: c.h, w: c.w, rx: Math.cos(c.h), rz: -Math.sin(c.h) };
+    }
+    var i, q, w = P[Math.floor(P.length / 2)].w;
+    for (i = 0; i < (o.rings || 0); i++) { var t = (i + 1) / (o.rings + 1); q = at(t, Math.sin(i * 0.9 + P[0].x) * Math.min(1.5, w / 2 - 0.8)); rings.push({ x: q.x, y: q.y + 1.1, z: q.z, got: false }); }
+    (o.en || []).forEach(function (e) { var q = at(e[0], e[1]); enemies.push({ hov: Z.hover || 0, bx: q.x, bz: q.z, x: q.x, y: q.y, z: q.z, px: q.rx, pz: q.rz, r: Math.max(0.5, q.w / 2 - 1.6 - Math.abs(e[1]) * 0.5), t: Math.random() * 6, alive: true, face: 0 }); });
+    (o.items || []).forEach(function (e) { var q = at(e[0], e[2]); items.push({ x: q.x, y: q.y, z: q.z, type: e[1], open: false }); });
+    (o.spikes || []).forEach(function (e) { var q = at(e[0], e[1]); spikes.push({ x: q.x, y: q.y, z: q.z }); });
+    (o.pads || []).forEach(function (e) { var q = at(e[0], e[1]); pads.push({ x: q.x, y: q.y, z: q.z, h: q.h, t: 0 }); });
+    (o.geysers || []).forEach(function (e, gi) { var q = at(e[0], e[1]); geysers.push({ x: q.x, y: q.y, z: q.z, ph: (gi * 53 + Math.floor(e[0] * 100)) % 150 }); });
+    (o.hoops || []).forEach(function (e) { var q = at(e[0], e[1] || 0); hoops.push({ x: q.x, y: q.y + 2.2, z: q.z, h: q.h, t: 0 }); });
+    if (o.spring) { q = at(o.spring[0], o.spring[1]); springs.push({ x: q.x, y: q.y, z: q.z, t: 0 }); }
+    if (o.post !== undefined) { q = at(o.post, w / 2 - 1); posts.push({ x: q.x, y: q.y, z: q.z, h: q.h, on: false }); }
+    if (o.secret) {
+      var sd = o.secret[1], qs = at(o.secret[0], sd * (w / 2 - 0.9)), ql = at(o.secret[0] + 0.08, sd * (w / 2 + 3)), ly = ql.y + 8;
+      addBox(ql.x - 2.2, ql.x + 2.2, ql.z - 2.2, ql.z + 2.2, ly, ly, "x", 0, 1, 1, "plat");
+      launchers.push({ x: qs.x, y: qs.y, z: qs.z, tx: ql.x, ty: ly, tz: ql.z, t: 0 });
+      warps.push({ x: ql.x, y: ly, z: ql.z, used: false });
+      for (var si = 0; si < 3; si++) rings.push({ x: ql.x + (si - 1) * 1.2 * qs.rz, y: ly + 1.1, z: ql.z - (si - 1) * 1.2 * qs.rx, got: false });
+    }
+    if (o.goal) { q = at(0.88, 0); goal = { x: q.x, y: q.y, z: q.z, spin: 0 }; }
+    for (var pp = 6; pp < P.length; pp += 14) { var c = P[pp]; pillars.push({ x: c.x, z: c.z, top: c.y - 1 }); }
+    void main;
+  }
+  function buildTrack(def) {
+    var x = 0, y = 0, z = 0, h = 0, s = 0, main = [];
+    C = [];
+    function flush() { if (main.length > 1) { finishPts(main); ribAdd(main, "main"); } main = []; }
+    function mk(fl, w, bk, ex) { var q = { x: x, y: y, z: z, h: h, w: w, bk: bk, fl: fl, dA: s }; for (var kk in ex) q[kk] = ex[kk]; return q; }
+    C.push(mk(true, 8, 0, {}));
+    def.forEach(function (o) {
+      var w = o.w || 8, i;
+      if (o.loop) {
+        var lp = { dA: s, x: x, y: y, z: z, h: h, R: o.loop, sh: o.shift || 9.5, w: w, cd: 0, rg: [] };
+        for (i = 0; i < (o.rings || 0); i++) lp.rg.push({ th: (i + 1) / (o.rings + 1) * Math.PI * 2, got: false });
+        loopsL.push(lp); flush();
+        x += Math.cos(h) * lp.sh; z -= Math.sin(h) * lp.sh;
+        return;
+      }
+      if (o.gap) {
+        flush();
+        var gx = x, gz = z, gy = y, gh = h, gr = o.gapRise || 0;
+        for (i = 1; i <= (o.plats || 0); i++) {
+          var f = i / (o.plats + 1), px = gx + Math.sin(gh) * o.gap * f, pz = gz + Math.cos(gh) * o.gap * f, py = gy + (o.platY || 0);
+          var pb = addBox(px - 1.7, px + 1.7, pz - 1.7, pz + 1.7, py, py, "x", 0, 1, 1, "plat"); pb.dA = s + o.gap * f;
+        }
+        for (i = 1; i <= (o.mov || 0); i++) {
+          var fm = i / (o.mov + 1), mx0 = gx + Math.sin(gh) * o.gap * fm, mz0 = gz + Math.cos(gh) * o.gap * fm, my = gy + (o.platY || 0);
+          var mb = addBox(mx0 - 2.2, mx0 + 2.2, mz0 - 2.2, mz0 + 2.2, my, my, "x", 0, 1, 1, "mov");
+          mb.dA = s + o.gap * fm; mb.mv = { cx: mx0, cz: mz0, lx: Math.sin(gh), lz: Math.cos(gh), amp: o.amp || 2.2, sp: o.msp || 0.028, ph: i * 2.1, dx: 0, dz: 0 }; movers.push(mb);
+        }
+        for (i = 1; i <= o.gap; i++) { x += Math.sin(h); z += Math.cos(h); y += gr / o.gap; s++; C.push(mk(false, w, 0, {})); }
+      }
+      var n = Math.max(1, Math.round(o.len || 0)), dh = (o.curve || 0) * Math.PI / 180 / n, dy = (o.rise || 0) / n;
+      var bmax = (o.bank || 0) * Math.PI / 180 * ((o.curve || 0) > 0 ? -1 : 1), cl = [];
+      var extra = { board: !!o.board, curb: true };
+      if (o.branch) flush();
+      for (i = 0; i <= n; i++) {
+        if (i > 0) { h += dh / 2; x += Math.sin(h); z += Math.cos(h); h += dh / 2; y += dy; s++; }
+        var q = mk(!o.branch, w, bmax * Math.sin(Math.PI * i / n), extra);
+        cl.push(q);
+        if (i > 0) C.push(q);
+        if (!o.branch && (i > 0 || main.length === 0)) main.push(q);
+      }
+      finishPts(cl);
+      if (o.branch) {
+        var B = o.branch, off = B.off || 7, side = B.side || 1, hi = [], lo = [];
+        cl.forEach(function (c, ii) {
+          var t = ii / (cl.length - 1), e = smooth(0, 0.24, t) * (1 - smooth(0.76, 1, t)), rx = Math.cos(c.h) * side, rz = -Math.sin(c.h) * side;
+          var re = B.rail ? smooth(0.38, 0.42, t) * (1 - smooth(0.6, 0.64, t)) : 0, hw = w + (6 - w) * e;
+          hi.push({ x: c.x + rx * off * e, y: c.y + (B.hi || 7) * e, z: c.z + rz * off * e, w: hw + (2.4 - hw) * re, bk: 0, fl: true, dA: c.dA, rail: re > 0.5, curb: t > 0.35, lane: "HIGH ROAD" });
+          lo.push({ x: c.x - rx * off * e, y: c.y - (B.lo || 0) * e, z: c.z - rz * off * e, w: w + (7 - w) * e, bk: 0, fl: true, dA: c.dA, curb: t > 0.35, lane: "LOW ROAD" });
+        });
+        finishPts(hi); finishPts(lo); ribAdd(hi, "hi"); ribAdd(lo, "lo");
+        forks.push({ dA: cl[0].dA, shown: false, side: side });
+        var hiMid = hi.slice(Math.floor(hi.length * 0.2), Math.ceil(hi.length * 0.8)), loMid = lo.slice(Math.floor(lo.length * 0.2), Math.ceil(lo.length * 0.8));
+        placeObjs(B.hiO, hiMid); placeObjs(B.loO, loMid);
+        main = [cl[cl.length - 1]];
+      } else placeObjs(o, cl, true);
+    });
+    flush();
+  }
+  var FROST = { fog: [0.78, 0.86, 0.96], sea: [0.86, 0.91, 0.98], g1: [0.96, 0.98, 1.0], g2: [0.8, 0.88, 0.97], w1: [0.55, 0.7, 0.86], w2: [0.42, 0.56, 0.74], pil: [0.6, 0.72, 0.86], plat: [0.65, 0.88, 1.0], spk: [0.6, 0.9, 1.0], spkE: 0.35, deco: "peaks", en: "peng", trim: [0.35, 0.85, 1.0] };
+  var MAGMA = { fog: [0.28, 0.09, 0.06], sea: [1.0, 0.38, 0.06], seaE: 0.85, g1: [0.32, 0.29, 0.3], g2: [0.23, 0.21, 0.23], w1: [0.48, 0.2, 0.1], w2: [0.32, 0.13, 0.08], pil: [0.2, 0.17, 0.18], plat: [0.95, 0.55, 0.2], spk: [0.15, 0.12, 0.14], spkE: 0.05, deco: "magma", en: "crab", trim: [1.0, 0.5, 0.1] };
+  var SPACE = { fog: [0.05, 0.03, 0.14], sea: [0.1, 0.06, 0.24], seaE: 0.25, g1: [0.48, 0.42, 0.8], g2: [0.34, 0.3, 0.64], w1: [0.22, 0.24, 0.44], w2: [0.15, 0.16, 0.32], pil: [0.3, 0.25, 0.52], plat: [0.5, 0.95, 1.0], spk: [0.9, 0.5, 1.0], spkE: 0.45, deco: "space", en: "drone", hover: 1.7, grav: 0.013, trim: [0.85, 0.5, 1.0] };
+  function zone(base, extra) { var o = {}, k; for (k in base) o[k] = base[k]; for (k in extra) o[k] = extra[k]; return o; }
+  var ZONES = [
+    zone(FROST, { n: "FROSTBITE PEAKS", sp: 0, ice: true, L: [
+      { len: 40, rings: 6, items: [[0.7, "s", -2]] },
+      { len: 60, rise: -14, board: 1, rings: 9 },
+      { turn: 1, len: 36, rings: 5, en: [[0.4, -2], [0.75, 2]], spikes: [[0.55, 0]] },
+      { gap: 12, plats: 1, len: 30, rings: 4, post: 0.2 },
+      { turn: -1, len: 70, rise: -18, board: 1, w: 10, rings: 10, spikes: [[0.35, -2.5], [0.65, 2.5]] },
+      { len: 30, rings: 4, items: [[0.3, "h", -2], [0.6, "f", 2]], spring: [0.97, 0] },
+      { step: 7, len: 36, rings: 5, en: [[0.5, 0]], secret: [0.25, -1] },
+      { turn: -1, len: 40, rings: 6, en: [[0.3, 2], [0.65, -2]], post: 0.1 },
+      { gap: 14, plats: 2, platY: 1, len: 30, rings: 4, items: [[0.5, "u", 0]] },
+      { turn: 1, len: 80, rise: -20, board: 1, w: 10, rings: 12, spikes: [[0.3, 0], [0.5, -3], [0.7, 3]] },
+      { len: 30, rings: 4, spring: [0.97, 0], post: 0.1 },
+      { step: 7, len: 40, rings: 6, en: [[0.4, -2], [0.7, 2]], items: [[0.2, "i", 2]] },
+      { gap: 10, len: 36, rings: 5, en: [[0.5, 0]], spikes: [[0.75, -2], [0.75, 2]] },
+      { len: 60, rise: -14, board: 1, rings: 9 },
+      { len: 44, rings: 6, en: [[0.4, 0]], goal: true }] }),
+    zone(FROST, { n: "FROST TITAN", boss: "titan", hp: 5, L: [
+      { len: 24, rings: 6, items: [[0.5, "h", 2.5]] },
+      { len: 44, w: 44, rings: 10 }] }),
+    zone(MAGMA, { n: "MAGMA CORE", sp: 1, chase: true, L: [
+      { len: 40, rings: 6, items: [[0.7, "s", 2]] },
+      { len: 40, rings: 5, en: [[0.5, 0]] },
+      { turn: -1, len: 36, rise: 6, rings: 5, geysers: [[0.35, -2], [0.65, 2]] },
+      { gap: 12, plats: 1, len: 30, rings: 4, post: 0.2 },
+      { turn: 1, len: 44, rise: 8, rings: 6, en: [[0.4, 2], [0.7, -2]] },
+      { len: 30, rings: 4, items: [[0.3, "h", -2], [0.6, "f", 2]], spring: [0.97, 0] },
+      { step: 7, len: 36, rings: 5, geysers: [[0.55, 0]], secret: [0.25, 1] },
+      { gap: 14, mov: 2, len: 36, rings: 5, post: 0.1 },
+      { len: 50, rise: 10, w: 10, rings: 7, geysers: [[0.3, -3], [0.5, 3], [0.7, 0]] },
+      { gap: 14, plats: 2, platY: 1, len: 30, rings: 4, items: [[0.5, "u", 0]] },
+      { turn: -1, len: 40, rings: 6, en: [[0.35, 2]], spikes: [[0.6, -2.2], [0.6, 2.2]] },
+      { len: 30, rings: 4, spring: [0.97, 0], post: 0.1 },
+      { step: 7, len: 44, rings: 6, geysers: [[0.3, -2], [0.6, 2]], items: [[0.8, "i", 0]] },
+      { turn: 1, len: 50, rise: 8, rings: 7, en: [[0.4, -2], [0.7, 2]] },
+      { len: 44, rings: 6, goal: true }] }),
+    zone(MAGMA, { n: "CINDER WYRM", boss: "wyrm", hp: 6, L: [
+      { len: 24, rings: 6, items: [[0.5, "h", 2.5]] },
+      { len: 44, w: 44, rings: 10 }] }),
+    zone(SPACE, { n: "STARLIGHT ORBIT", sp: 2, L: [
+      { len: 40, rings: 6, items: [[0.7, "s", -2]] },
+      { gap: 20, plats: 1, platY: 2, len: 36, rings: 5, en: [[0.6, 0]] },
+      { turn: 1, len: 40, rings: 6, hoops: [[0.92]] },
+      { gap: 26, plats: 1, platY: 3, len: 30, rings: 4, post: 0.2 },
+      { turn: -1, len: 44, rise: -8, rings: 6, en: [[0.4, 2]], spikes: [[0.7, -2], [0.7, 2]] },
+      { gap: 18, mov: 2, len: 30, rings: 4, items: [[0.3, "h", -2], [0.6, "f", 2]] },
+      { len: 30, rings: 4, spring: [0.97, 0] },
+      { step: 10, len: 40, rings: 5, en: [[0.5, 0]], secret: [0.25, -1] },
+      { gap: 24, plats: 2, platY: 4, len: 36, rings: 6, post: 0.1 },
+      { len: 50, rise: -12, w: 10, rings: 8, pads: [[0.1, 0]], en: [[0.5, -3], [0.75, 3]] },
+      { gap: 24, plats: 1, platY: 2, len: 30, rings: 4, items: [[0.5, "u", 0]] },
+      { turn: 1, len: 40, rings: 6, en: [[0.4, 0]], spikes: [[0.65, -2.2], [0.65, 2.2]], hoops: [[0.92]] },
+      { gap: 22, mov: 2, len: 36, rings: 5, post: 0.1 },
+      { turn: -1, len: 50, rise: -6, rings: 7, en: [[0.5, 2]], items: [[0.25, "i", -2]] },
+      { len: 44, rings: 6, goal: true }] }),
+    zone(SPACE, { n: "NEBULA KING", boss: "nebula", hp: 7, L: [
+      { len: 24, rings: 6, items: [[0.5, "h", 2.5]] },
+      { len: 44, w: 44, rings: 10 }] })
+  ];
+  ZONES[0].T = [
+    { len: 34, rings: 5, items: [[0.7, "s", -2]] },
+    { len: 56, rise: -12, curve: 70, bank: 14, board: 1, rings: 8 },
+    { len: 40, curve: -55, bank: 10, rings: 6, en: [[0.4, -2], [0.75, 2]], spikes: [[0.55, 0]] },
+    { len: 34, rise: -7, rings: 5, post: 0.15 },
+    { loop: 7, rings: 9 },
+    { len: 30, rings: 4 },
+    { len: 130, curve: 40, branch: { off: 7, hi: 7, lo: 2, rail: 1, hiO: { rings: 12, spikes: [[0.12, 1.5]] }, loO: { rings: 8, items: [[0.35, "h", 0], [0.55, "s", -1]], en: [[0.45, 1.5], [0.7, -1.5]] } } },
+    { len: 24, rings: 4, post: 0.3 },
+    { gap: 12, plats: 1, len: 30, rings: 4 },
+    { len: 70, rise: -16, curve: -80, bank: 16, board: 1, w: 10, rings: 10, spikes: [[0.35, -2.5], [0.65, 2.5]] },
+    { len: 30, rings: 4, items: [[0.3, "h", -2], [0.6, "f", 2]], post: 0.5 },
+    { len: 40, curve: 50, bank: 10, rise: 5, rings: 6, en: [[0.5, 0]] },
+    { len: 36, rings: 5, secret: [0.35, -1], en: [[0.75, 1]] },
+    { len: 26, rise: -6, rings: 4 },
+    { loop: 8, rings: 10 },
+    { len: 30, rings: 4, items: [[0.5, "u", 0]], post: 0.3 },
+    { len: 110, curve: -45, branch: { off: 7, hi: 8, side: -1, rail: 1, hiO: { rings: 10, spikes: [[0.1, 0]], en: [[0.85, 0]] }, loO: { rings: 8, items: [[0.4, "i", 0]], en: [[0.3, -1], [0.65, 1]] } } },
+    { len: 20, rings: 3 },
+    { gap: 10, plats: 1, len: 36, rings: 5, en: [[0.5, 0]], spikes: [[0.75, -2], [0.75, 2]] },
+    { len: 60, rise: -14, curve: 60, bank: 12, board: 1, rings: 9 },
+    { len: 44, rings: 6, en: [[0.4, 0]], goal: true }];
+  ZONES[2].T = [
+    { len: 36, rings: 6, items: [[0.7, "s", 2]] },
+    { len: 44, curve: -60, bank: 12, rings: 6, en: [[0.5, 0]] },
+    { len: 36, rise: 6, rings: 5, geysers: [[0.35, -2], [0.65, 2]] },
+    { gap: 12, plats: 1, len: 30, rings: 4, post: 0.2 },
+    { len: 46, curve: 70, bank: 14, rise: 6, rings: 6, en: [[0.4, 2], [0.7, -2]] },
+    { len: 30, rise: -6, rings: 4 },
+    { loop: 7, rings: 9 },
+    { len: 30, rings: 4, items: [[0.3, "h", -2], [0.6, "f", 2]], post: 0.5 },
+    { len: 130, curve: -40, branch: { off: 7, hi: 8, rail: 1, hiO: { rings: 12, geysers: [[0.12, 0]] }, loO: { rings: 8, items: [[0.3, "s", 0], [0.6, "h", 0]], geysers: [[0.45, -1.5], [0.7, 1.5]] } } },
+    { len: 36, rings: 5, geysers: [[0.6, 0]], secret: [0.25, 1] },
+    { gap: 14, mov: 2, len: 36, rings: 5, post: 0.1 },
+    { len: 50, rise: 10, curve: 60, bank: 12, w: 10, rings: 7, geysers: [[0.3, -3], [0.5, 3], [0.7, 0]] },
+    { gap: 12, plats: 2, len: 30, rings: 4, items: [[0.5, "u", 0]] },
+    { len: 40, curve: -70, bank: 14, rings: 6, en: [[0.35, 2]], spikes: [[0.6, -2.2], [0.6, 2.2]] },
+    { len: 26, rise: -5, rings: 4, post: 0.3 },
+    { loop: 8, rings: 10 },
+    { len: 20, rings: 3 },
+    { len: 110, curve: 45, branch: { off: 7, hi: 7, side: -1, rail: 1, hiO: { rings: 10, en: [[0.85, 0]] }, loO: { rings: 8, items: [[0.4, "i", 0]], geysers: [[0.3, 0], [0.65, 0]] } } },
+    { len: 50, rise: 8, curve: -50, bank: 10, rings: 7, en: [[0.4, -2], [0.7, 2]] },
+    { len: 44, rings: 6, goal: true }];
+  ZONES[4].T = [
+    { len: 36, rings: 6, items: [[0.7, "s", -2]] },
+    { gap: 20, plats: 1, platY: 2, len: 36, curve: 50, bank: 10, rings: 5, en: [[0.6, 0]] },
+    { len: 40, rings: 6, hoops: [[0.92]] },
+    { gap: 26, plats: 1, platY: 3, len: 30, rings: 4, post: 0.2 },
+    { len: 44, rise: -8, curve: -60, bank: 12, rings: 6, en: [[0.4, 2]], spikes: [[0.7, -2], [0.7, 2]] },
+    { len: 24, rise: -4, rings: 4 },
+    { loop: 9, rings: 10 },
+    { len: 30, rings: 4, items: [[0.3, "h", -2], [0.6, "f", 2]], post: 0.5 },
+    { len: 130, curve: 50, branch: { off: 8, hi: 9, rail: 1, hiO: { rings: 12, en: [[0.12, 0]] }, loO: { rings: 8, items: [[0.35, "s", 0], [0.6, "h", 0]], en: [[0.5, 0]] } } },
+    { len: 40, rings: 5, en: [[0.6, 0]], secret: [0.25, -1] },
+    { gap: 24, plats: 2, platY: 4, len: 36, rings: 6, post: 0.1 },
+    { len: 50, rise: -12, curve: -70, bank: 14, w: 10, rings: 8, pads: [[0.1, 0]], en: [[0.5, -3], [0.75, 3]] },
+    { gap: 22, mov: 2, len: 36, rings: 5 },
+    { len: 26, rise: -5, rings: 4, post: 0.3 },
+    { loop: 10, rings: 10 },
+    { len: 20, rings: 3 },
+    { len: 110, curve: -40, branch: { off: 8, hi: 9, side: -1, rail: 1, hiO: { rings: 10, en: [[0.85, 0]] }, loO: { rings: 8, items: [[0.4, "i", 0]], en: [[0.3, 0], [0.65, 0]] } } },
+    { len: 40, curve: 50, bank: 10, rings: 6, en: [[0.4, 0]], spikes: [[0.65, -2.2], [0.65, 2.2]] },
+    { len: 44, rings: 6, goal: true }];
+  var boss = null, SP = null, FB = null, spMode = false, fbMode = false;
+  var zi = 0, Z = ZONES[0], zoneCard = 0, FOG = Z.fog, BASE = -16, PIT = -14;
+  function buildLevel() {
+    Z = ZONES[zi]; FOG = Z.fog;
+    GRAV = Z.grav || 0.022; geysers = []; hoops = []; segs = []; cum = 0;
+    boxes = []; rings = []; loose = []; enemies = []; items = []; springs = []; posts = []; pillars = []; parts = []; popups = []; movers = []; spikes = []; pads = []; decor = []; warps = []; launchers = [];
+    tx = 0; tz = 0; ty = 0; td = 0; wps = []; goal = null;
+    ribs = []; tgrid = {}; loopsL = []; forks = []; C = [];
+    if (Z.T) buildTrack(Z.T); else Z.L.forEach(function (o) { seg(o); });
+    boss = null;
+    if (Z.boss) {
+      [[-24, -22, 22, 70], [22, 24, 22, 70], [-24, 24, 68, 70], [-24, -4, 22, 24], [4, 24, 22, 24], [-6, -4, -2, 24], [4, 6, -2, 24], [-6, 6, -2, 0]].forEach(function (w) { addBox(w[0], w[1], w[2], w[3], 8, 8, "x", 0, 1, 1, "wall"); });
+      boss = { type: Z.boss, x: 0, y: 0, z: 54, hp: Z.hp, max: Z.hp, t: 0, inv: 0, dead: 0, ph: 0, shots: [], wave: -1, mode: 0, mt: 0, mx: 0, mz: 46, tx: 0, tz: 46, hy: -4, a: 0, dir: 0, cy: 2, cr: 2, vul: false };
+    }
+    var x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    boxes.forEach(function (b) { x0 = Math.min(x0, b.x0); x1 = Math.max(x1, b.x1); z0 = Math.min(z0, b.z0); z1 = Math.max(z1, b.z1); });
+    C.forEach(function (c) { x0 = Math.min(x0, c.x); x1 = Math.max(x1, c.x); z0 = Math.min(z0, c.z); z1 = Math.max(z1, c.z); });
+    var mt = 0; boxes.forEach(function (b) { mt = Math.min(mt, b.ya, b.yb); }); C.forEach(function (c) { mt = Math.min(mt, c.y); }); BASE = Math.min(0, mt + 7) - 16; PIT = Math.min(-14, mt - 7);
+    var mx = (x0 + x1) / 2, mz = (z0 + z1) / 2, rx = (x1 - x0) / 2 + 60, rz = (z1 - z0) / 2 + 60;
+    clouds = []; isles = [];
+    if (Z.deco === "peaks") for (var i = 0; i < 26; i++) clouds.push({ x: mx - rx + Math.random() * rx * 2, y: BASE + 56 + Math.random() * 25, z: mz - rz + Math.random() * rz * 2, s: 6 + Math.random() * 8 });
+    for (i = 0; i < 14; i++) {
+      var a = i / 14 * Math.PI * 2, r = 1 + (i % 3) * 0.18;
+      decor.push({ x: mx + Math.cos(a) * rx * r, z: mz + Math.sin(a) * rz * r, s: 14 + (i % 4) * 6, h: 10 + (i * 7 % 5) * 6, c: i % 3 });
+    }
+  }
+  // ---------------------------------------------------------------- PR4 world map hub
+  var beatNK = false; try { beatNK = localStorage.getItem("pr4_nk") === "1"; } catch (e) { beatNK = false; }
+  var HUBN = [{ x: -30, y: 0, z: 0 }, { x: -19, y: 3, z: 9 }, { x: -5, y: 0, z: 3 }, { x: 7, y: 2, z: -6 }, { x: 20, y: 4, z: 3 }, { x: 28, y: 7, z: 15 }, { x: 13, y: 13, z: 25 }];
+  var hub = { at: 0, to: 0, t: 1, keep: false, msg: 0 };
+  function hubOpen(i) { return i <= 5 ? i <= maxZone : (shards === ALLSH && beatNK); }
+  function hubPos() {
+    var a = HUBN[hub.at], b = HUBN[hub.to], t = smooth(0, 1, hub.t), mv = hub.at !== hub.to;
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t + (mv ? Math.sin(t * Math.PI) * 1.5 : 0), z: a.z + (b.z - a.z) * t, h: mv ? Math.atan2(b.x - a.x, b.z - a.z) : Math.PI };
+  }
+  function enterHub(at, to, keep) { hub.at = at; hub.to = to; hub.t = at === to ? 1 : 0; hub.keep = keep; hub.msg = 0; state = "hub"; paused = false; }
+  // ---------------------------------------------------------------- game state
+  var state = "title", paused = false, tick = 0, titleT = 0, sel = 0, ch = 0, lockMsg = 0;
+  try { if (window.PRC && PRC.ch) { var pci = -1; CH.forEach(function (c, i) { if (c.n === PRC.ch) pci = i; }); if (pci >= 0) { ch = pci; sel = pci; } unlocked = true; } } catch (e) {}
+  var p, score = 0, lives = 3, time = 0, deathT = 0, shake = 0, cp, res = null;
+  var cam = { yaw: 0, x: 0, y: 5, z: -8, ty: 0 };
+  var chaseD = -70, prog = 0, cpProg = 0;
+  function chasePos(D) {
+    if (C.length) { var ci = Math.max(0, Math.min(C.length - 1, Math.round(D))), cc = C[ci]; return { x: cc.x, y: cc.y, z: cc.z, h: cc.h }; }
+    var g = segs[0]; for (var i = 0; i < segs.length; i++) if (segs[i].d0 <= D) g = segs[i];
+    var t = D - g.d0, f = Math.max(0, Math.min(1, t / g.L));
+    return { x: g.x + g.dx * t, z: g.z + g.dz * t, y: g.y0 + (g.y1 - g.y0) * f, h: Math.atan2(g.dx, g.dz), dx: g.dx, dz: g.dz };
+  }
+  function stepChase() {
+    if (!Z.chase || deathT || p.loopR) return;
+    if (p.ground && p.box && p.box.dA !== undefined) {
+      var b = p.box, al = b.kind === "path" && !b.turnBox ? Math.max(0, Math.min(b.L, ((b.ax === "x" ? p.x : p.z) - b.s0) * b.sg)) : 0;
+      prog = Math.max(prog, b.dA + al);
+    }
+    if (zoneCard > 60 || state !== "play") return;
+    chaseD = Math.max(chaseD + 0.27, prog - 75);
+    if (chaseD > prog - 2) { popup("THE LAVA CAUGHT YOU!"); hurt(); chaseD = prog - 38; shake = 10; }
+  }
+  function newPlayer(c) {
+    return { x: c.x, y: c.y, z: c.z, h: c.h, s: 0, vy: 0, ground: true, box: null, jumping: false, roll: false, dash: 0, dashUsed: false, hopUsed: false,
+      glide: false, dive: false, pound: false, loops: 0, hiT: 0, loT: 0, grind: 0, lag: 0, qcd: 0, quillT: 0, heat: 0, lock: 0, boosting: false, sprung: false, skid: false,
+      sparks: 0, inv: 0, star: 0, shoes: 0, shield: false, anim: 0, spin: 0 };
+  }
+  function startGame(z) {
+    zi = z; buildLevel(); score = 0; lives = 3; time = 0; deathT = 0; newUnlock = false; res = null; zoneCard = 150;
+    cp = { x: 0, y: 0, z: 3, h: 0 }; p = newPlayer(cp); chaseD = -70; prog = 0; cpProg = 0; cam.yaw = 0; cam.x = 0; cam.y = 4; cam.z = -6; cam.ty = 0;
+    state = "play"; paused = false; snd("ok");
+  }
+  function nextZone() {
+    var sc = score, lv = lives; startGame(zi + 1); score = sc; lives = lv;
+  }
+  function continueRun() { if (zi < 5) { saveZone(zi + 1); enterHub(zi, zi + 1, true); } }
+  var retPos = null;
+  function returnFromSpecial() {
+    var r = retPos; retPos = null; SP = null; state = "play";
+    p.x = r.x + Math.sin(r.h + Math.PI) * 1.5; p.y = r.y; p.z = r.z + Math.cos(r.h + Math.PI) * 1.5; p.vy = 0; p.s = 0; p.ground = false; p.box = null; p.jumping = false; p.roll = false; p.inv = 90;
+    snd("ok");
+  }
+  function stepLaunch() {
+    var L = p.launch; L.t++; var f = L.t / L.n;
+    p.x = L.x0 + (L.x1 - L.x0) * f; p.z = L.z0 + (L.z1 - L.z0) * f; p.y = L.y0 + (L.y1 - L.y0) * f + Math.sin(f * Math.PI) * 4;
+    p.spin += 0.4; p.jumping = true; p.ground = false; p.box = null;
+    if (tick % 3 === 0) parts.push({ x: p.x, y: p.y + 0.6, z: p.z, vx: 0, vy: 0, vz: 0, t: 18, col: [1, 0.85, 0.3], s: 0.12 });
+    if (L.t >= L.n) { p.launch = null; p.y = L.y1 + 0.05; p.vy = 0; p.s = 0; p.jumping = false; }
+  }
+  // ---------------------------------------------------------------- bosses: FROST TITAN, CINDER WYRM, NEBULA KING
+  function bossName() { return Z.n; }
+  function dropShot(b, x, z) { b.shots.push({ x: Math.max(-19, Math.min(19, x)), y: 15, z: Math.max(26, Math.min(66, z)), vy: 0 }); }
+  function bossTouch(b, harmful) {
+    if (deathT) return;
+    var dd = Math.hypot(p.x - b.x, p.z - b.z), dy = (p.y + 0.7) - b.cy;
+    if (dd > b.cr + 0.9 || Math.abs(dy) > b.cr + 0.9) return;
+    var push = Math.atan2(p.x - b.x, p.z - b.z);
+    if (b.vul && !b.inv && (attacking() || p.vy < 0)) {
+      b.hp--; b.inv = 50; shake = 10; snd("pop"); burst(b.x, b.cy, b.z, [1, 0.9, 0.3], 16); popup(b.hp ? "HIT!  " + b.hp + " TO GO" : bossName() + " DOWN!");
+      p.vy = 0.42; p.ground = false; p.box = null; p.jumping = true; p.h = push; p.s = 0.32; p.pound = false; p.dive = false; p.dash = 0; p.zip = null;
+      if (!b.hp) { b.dead = 1; b.shots = []; b.wave = -1; b.vul = false; score += 1000; } else { b.vul = false; b.mt = 9999; }
+    } else if (b.vul) { p.h = push; p.s = 0.25; }
+    else if (attacking() || !harmful) { p.vy = 0.35; p.ground = false; p.box = null; p.jumping = true; p.h = push; p.s = 0.3; p.dash = 0; p.pound = false; p.dive = false; p.zip = null; snd("no"); }
+    else { hurt(); p.h = push; p.s = 0.3; }
+  }
+  function stepTitan(b) {
+    var rage = b.max - b.hp; b.mt++; b.vul = false;
+    if (b.mode === 0) {
+      var dx = p.x - b.x, dz = p.z - b.z, d = Math.hypot(dx, dz) || 1, v = 0.035 + rage * 0.007;
+      if (d > 3) { b.x += dx / d * v; b.z += dz / d * v; }
+      b.dir = Math.atan2(dx, dz); b.y = Math.abs(Math.sin(b.mt * 0.12)) * 0.3;
+      if (b.mt % 55 === 30) { dropShot(b, p.x + (Math.random() - 0.5) * 2, p.z + (Math.random() - 0.5) * 2); snd("dash"); }
+      if (b.mt > 170 - rage * 12) { b.mode = 1; b.mt = 0; }
+    } else if (b.mode === 1) {
+      if (b.mt < 32) b.dir = Math.atan2(p.x - b.x, p.z - b.z);
+      b.y = 0; if (b.mt % 6 === 0) burst(b.x, 0.3, b.z, [1, 1, 1], 2);
+      if (b.mt === 1) popup("IT'S CHARGING!");
+      if (b.mt > 45) { b.mode = 2; b.mt = 0; snd("dash"); }
+    } else if (b.mode === 2) {
+      var sp = 0.5 + rage * 0.04; b.x += Math.sin(b.dir) * sp; b.z += Math.cos(b.dir) * sp;
+      if (b.mt % 3 === 0) parts.push({ x: b.x, y: 0.3, z: b.z, vx: 0, vy: 0.05, vz: 0, t: 20, col: [0.9, 0.95, 1], s: 0.3 });
+      if (b.x < -18 || b.x > 18 || b.z < 28 || b.z > 64) { b.mode = 3; b.mt = 0; shake = 16; snd("pound"); popup("STUNNED! HIT IT NOW!"); for (var k = 0; k < 4; k++) dropShot(b, b.x + (Math.random() - 0.5) * 14, b.z + (Math.random() - 0.5) * 14); }
+    } else if (b.mode === 3) {
+      b.vul = true; b.y = 0;
+      if (b.mt > 140) { b.mode = 0; b.mt = 0; b.vul = false; }
+    }
+    if (b.mt > 9000) { b.mode = 0; b.mt = 0; }
+    b.x = Math.max(-18, Math.min(18, b.x)); b.z = Math.max(28, Math.min(64, b.z));
+    b.cy = b.y + 2; b.cr = 2.1; b.ph = b.vul ? 2 : 0;
+    bossTouch(b, true);
+  }
+  function stepWyrm(b) {
+    var rage = b.max - b.hp; b.mt++; b.vul = false;
+    if (b.mode === 0) {
+      b.mx += (p.x - b.mx) * 0.05; b.mz += (p.z - b.mz) * 0.05; b.hy = -4; b.x = b.mx; b.z = b.mz;
+      if (b.mt % 50 === 25) { dropShot(b, p.x + (Math.random() - 0.5) * 6, p.z + (Math.random() - 0.5) * 6); snd("dash"); }
+      if (b.mt > 110 - rage * 6) { b.mode = 1; b.mt = 0; shake = 12; snd("pound"); burst(b.mx, 0.5, b.mz, [1, 0.5, 0.1], 24); }
+    } else if (b.mode === 1) {
+      b.x = b.mx; b.z = b.mz; b.hy = -3 + Math.min(1, b.mt / 22) * 11;
+      if (b.mt < 14 && !deathT && Math.hypot(p.x - b.mx, p.z - b.mz) < 2.8 && p.y < 3) hurt();
+      if (b.mt > 36) { b.mode = 2; b.mt = 0; b.tx = p.x; b.tz = p.z; snd("dash"); }
+    } else if (b.mode === 2) {
+      var f = Math.min(1, b.mt / 24); b.x = b.mx + (b.tx - b.mx) * f; b.z = b.mz + (b.tz - b.mz) * f; b.hy = 8 + (0.2 - 8) * f * f;
+      if (b.mt >= 24) { b.mode = 3; b.mt = 0; shake = 14; snd("pound"); burst(b.x, 0.5, b.z, [1, 0.6, 0.2], 20); popup("ITS HEAD IS STUCK! HIT IT!"); }
+    } else if (b.mode === 3) {
+      b.vul = true; b.hy = 0.2;
+      if (b.mt > 125 - rage * 6) { b.mode = 4; b.mt = 0; b.vul = false; }
+    } else if (b.mode === 4) {
+      var g = Math.min(1, b.mt / 30); b.x = b.tx + (b.mx - b.tx) * g; b.z = b.tz + (b.mz - b.tz) * g; b.hy = 0.2 + Math.sin(g * Math.PI) * 4 - g * 4;
+      if (b.mt >= 30) { b.mode = 0; b.mt = 0; }
+    }
+    if (b.mt > 9000) { b.mode = 4; b.mt = 0; }
+    b.cy = b.hy + 0.9; b.cr = 1.7; b.ph = b.vul ? 2 : 0; b.y = b.hy;
+    if (b.hy > -1) bossTouch(b, b.mode !== 3);
+  }
+  function stepNebula(b) {
+    var rage = b.max - b.hp; b.mt++; b.vul = false; b.t2 = (b.t2 || 0) + 1;
+    var tx = Math.sin(b.t2 * 0.01) * 8, tz = 46 + Math.cos(b.t2 * 0.013) * 8;
+    if (b.mode === 0) {
+      b.x += (tx - b.x) * 0.05; b.z += (tz - b.z) * 0.05; b.y += (5.5 - b.y) * 0.08;
+      b.a += 0.015 + rage * 0.0025; b.beam = Math.min(1, b.mt / 40);
+      if (b.mt % 80 === 60) { dropShot(b, p.x, p.z); snd("dash"); }
+      if (b.beam >= 1 && !deathT && p.y < 1.0) for (var k = 0; k < 2; k++) {
+        var a = b.a + k * Math.PI, ux = Math.sin(a), uz = Math.cos(a), rx = p.x - b.x, rz = p.z - b.z, al = rx * ux + rz * uz, pr = Math.abs(rx * uz - rz * ux);
+        if (al > 0 && al < 34 && pr < 0.75) hurt();
+      }
+      if (b.mt > 340 - rage * 18) { b.mode = 1; b.mt = 0; b.beam = 0; }
+    } else if (b.mode === 1) { b.y += (1.3 - b.y) * 0.12; if (b.mt > 36) { b.mode = 2; b.mt = 0; shake = 8; snd("pound"); popup("THE CORE IS OPEN!"); } }
+    else if (b.mode === 2) { b.vul = true; b.y = 1.3; if (b.mt > 140) { b.mode = 3; b.mt = 0; b.vul = false; } }
+    else { b.y += 0.15; if (b.mt > 30) { b.mode = 0; b.mt = 0; } }
+    if (b.mt > 9000) { b.mode = 3; b.mt = 0; }
+    b.cy = b.y + 0.4; b.cr = 1.8; b.ph = b.vul ? 2 : 0;
+    bossTouch(b, b.mode !== 2);
+  }
+  function stepBoss() {
+    var b = boss; if (!b) return;
+    if (b.dead) {
+      b.dead++; b.vul = false; b.beam = 0;
+      if (b.dead % 8 === 0) { burst(b.x + (Math.random() - 0.5) * 3, b.cy + Math.random() * 2, b.z + (Math.random() - 0.5) * 3, [1, 0.6, 0.2], 10); snd("pop"); shake = 6; }
+      if (b.dead > 160) bossBeaten();
+      return;
+    }
+    b.t++; if (b.inv) b.inv--;
+    if (b.type === "titan") stepTitan(b); else if (b.type === "wyrm") stepWyrm(b); else stepNebula(b);
+    for (var i = b.shots.length - 1; i >= 0; i--) {
+      var s = b.shots[i]; s.vy -= 0.012; s.y += s.vy;
+      if (s.y <= 0.3) { b.shots.splice(i, 1); burst(s.x, 0.4, s.z, b.type === "titan" ? [0.8, 0.95, 1] : b.type === "wyrm" ? [1, 0.5, 0.1] : [1, 0.5, 1], 10); snd("pop"); if (!deathT && Math.hypot(p.x - s.x, p.z - s.z) < 2.0 && p.y < 2) hurt(); }
+    }
+  }
+  function bossBeaten() {
+    boss = null; score += 5000; saveZone(Math.min(5, zi + 1));
+    if (zi < 5) { if (!unlocked && zi === 1) { setUnlocked(); newUnlock = true; } state = "bossclear"; snd("goal"); return; }
+    beatNK = true; try { localStorage.setItem("pr4_nk", "1"); } catch (e) {}
+    state = shards === ALLSH ? "secret" : "ending"; snd("goal"); try { if (window.PRC && PRC.report) PRC.report("win"); } catch (e) {}
+  }
+  // ---------------------------------------------------------------- special stages: SKY DIVE
+  var SPS = [
+    { sky: [0.55, 0.76, 1.0], ring: [1, 0.85, 0.2], sh: [0.3, 0.75, 1], cl: [1, 1, 1], len: 420, spd: 0.36 },
+    { sky: [1.0, 0.58, 0.38], ring: [0.3, 1, 0.6], sh: [1, 0.55, 0.15], cl: [1, 0.86, 0.72], len: 470, spd: 0.4 },
+    { sky: [0.13, 0.07, 0.3], ring: [1, 0.45, 0.9], sh: [0.8, 0.35, 1], cl: [0.55, 0.45, 0.95], len: 520, spd: 0.44 }];
+  var SHCOL = ["#4cc0ff", "#ff9a30", "#c060ff"];
+  function startSpecial(i) {
+    var D = SPS[i], objs = [], seed = 11 + i * 97, total = 0, ph = i * 1.7;
+    function rnd() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+    for (var d = 30; d < D.len - 20; d += 8) {
+      var rx = Math.sin(d * 0.045 + ph) * 3.6 + Math.sin(d * 0.017) * 1.2, rz = Math.cos(d * 0.038 + ph * 2) * 3;
+      objs.push({ t: "r", x: rx, z: rz, d: d }); total++;
+      if (rnd() < 0.5) { var a = rnd() * 6.28; objs.push({ t: "m", x: rx + Math.cos(a) * 2.7, z: rz + Math.sin(a) * 2.7, d: d + 4 }); }
+    }
+    SP = { i: i, D: D, x: 0, z: 0, d: 0, spd: D.spd, orbs: 0, need: Math.ceil(total * 0.55), total: total, objs: objs, inv: 0, anim: 0, done: 0, win: false };
+    state = "special"; paused = false; zoneCard = 150; snd("ok");
+  }
+  function stepSpecial() {
+    var s = SP; if (zoneCard) zoneCard--;
+    if (s.done) { s.done++; s.d += s.spd * Math.max(0, 1 - s.done / 40); if (s.done > 90) { state = "spresult"; if (s.win) { addShard(s.i); snd("goal"); } else snd("no"); } return; }
+    var ix = (keys.r || keys.tr ? 1 : 0) - (keys.l || keys.tl ? 1 : 0), iz = (keys.u ? 1 : 0) - (keys.dn ? 1 : 0);
+    s.x = Math.max(-6.5, Math.min(6.5, s.x - ix * 0.17)); s.z = Math.max(-6, Math.min(6, s.z + iz * 0.17));
+    if (s.inv) s.inv--;
+    if (zoneCard > 90) return;
+    s.spd = Math.min(s.D.spd * 1.4, s.spd + 0.0001);
+    var d0 = s.d; s.d += s.inv > 30 ? s.spd * 0.6 : s.spd;
+    s.objs.forEach(function (o) {
+      if (o.got || o.d <= d0 || o.d > s.d) return;
+      var dist = Math.hypot(o.x - s.x, o.z - s.z);
+      if (o.t === "r") { if (dist < 1.8) { o.got = true; s.orbs++; snd("spark"); } }
+      else if (dist < 1.1 && !s.inv) { o.got = true; s.orbs = Math.max(0, s.orbs - 3); s.inv = 60; shake = 12; snd("lose"); }
+    });
+    if (s.d >= s.D.len) { s.done = 1; s.win = s.orbs >= s.need; }
+  }
+  // ---------------------------------------------------------------- secret final boss: ECLIPSE SERPENT
+  function startFinal() {
+    FB = { x: 0, y: 4, z: 0, dz: 0, dash: 0, cd: 0, inv: 0, sparks: 60, down: 0, bx: 0, by: 6, bdz: 32, hp: 8, t: 0, binv: 0, shots: [], rings: [], dead: 0, sx: 0, sy: 0 };
+    state = "final"; paused = false; zoneCard = 180; snd("item");
+  }
+  function hurtF() {
+    var f = FB; if (f.inv || f.dash || f.down) return;
+    f.sparks = Math.max(0, f.sparks - 10); f.inv = 90; shake = 10; snd("lose");
+    if (f.sparks <= 0) { lives--; f.down = 120; snd("die"); }
+  }
+  function stepFinal() {
+    var f = FB; f.t++; if (zoneCard) zoneCard--;
+    f.z += 0.6;
+    if (f.dead) { f.dead++; f.by -= 0.05; if (f.dead % 6 === 0) { snd("pop"); shake = 8; } if (f.dead > 170) { score += 20000; state = "trueend"; snd("goal"); try { if (window.PRC && PRC.report) PRC.report("true"); } catch (e) {} } return; }
+    if (f.down) { f.down--; f.y -= 0.05; if (!f.down) { if (lives <= 0) { state = "over"; return; } f.sparks = 50; f.inv = 120; f.y = 4; } return; }
+    var ix = (keys.r || keys.tr ? 1 : 0) - (keys.l || keys.tl ? 1 : 0), iy = (keys.u ? 1 : 0) - (keys.dn ? 1 : 0);
+    f.x = Math.max(-9, Math.min(9, f.x - ix * 0.22)); f.y = Math.max(0.5, Math.min(11, f.y + iy * 0.2));
+    if (f.cd) f.cd--; if (f.inv) f.inv--; if (f.binv) f.binv--;
+    if ((pressed.x || pressed.j || pressed.roll) && !f.cd && !f.dash) { f.dash = 1; f.cd = 45; snd("dash"); }
+    if (f.dash) { f.dash++; if (f.dash < 15) f.dz += 2.6; else { f.dz = Math.max(0, f.dz - 1.8); if (f.dz <= 0) f.dash = 0; } }
+    if (f.t % 40 === 0) { f.sparks--; if (f.sparks <= 0) { f.sparks = 0; lives--; f.down = 120; snd("die"); return; } }
+    var hpF = 8 - f.hp, sw = f.t % 420;
+    if (sw === 331) { f.sx = f.x; f.sy = f.y; popup("IT'S LUNGING!"); snd("heat"); }
+    if (sw > 330) {
+      f.bx += (f.sx - f.bx) * 0.08; f.by += (f.sy - f.by) * 0.08;
+      f.bdz = sw < 375 ? Math.max(1, f.bdz - 1.1) : Math.min(32, f.bdz + 1.1);
+    } else {
+      f.bx += (Math.sin(f.t * (0.012 + hpF * 0.002)) * 6 - f.bx) * 0.1; f.by += (5.5 + Math.sin(f.t * 0.021) * 3.5 - f.by) * 0.1;
+      f.bdz += (32 - f.bdz) * 0.05;
+      if (f.t % Math.max(24, 50 - hpF * 3) === 0) { var L = Math.max(4, f.bdz - f.dz); f.shots.push({ x: f.bx, y: f.by, dz: f.bdz, vx: (f.x - f.bx) / L * 0.5, vy: (f.y - f.by) / L * 0.5 }); snd("dash"); }
+    }
+    for (var i = f.shots.length - 1; i >= 0; i--) {
+      var s = f.shots[i]; s.x += s.vx; s.y += s.vy; s.dz -= 0.5;
+      if (Math.abs(s.dz - f.dz) < 1 && Math.hypot(s.x - f.x, s.y - f.y) < 1.1) { f.shots.splice(i, 1); if (f.dash) burst(0, 0, 0, [1, 1, 1], 0); else hurtF(); continue; }
+      if (s.dz < -6) f.shots.splice(i, 1);
+    }
+    if (f.t % 90 === 0) { var rx = (Math.random() - 0.5) * 14, ry = 1 + Math.random() * 9; for (var k = 0; k < 5; k++) f.rings.push({ x: rx, y: ry, dz: 50 + k * 2.5 }); }
+    for (i = f.rings.length - 1; i >= 0; i--) {
+      var r = f.rings[i]; r.dz -= 0.6;
+      if (Math.abs(r.dz - f.dz) < 1.3 && Math.hypot(r.x - f.x, r.y - f.y) < 1.5) { f.rings.splice(i, 1); f.sparks++; score += 10; snd("spark"); continue; }
+      if (r.dz < -6) f.rings.splice(i, 1);
+    }
+    if (Math.abs(f.bdz - f.dz) < 2.5 && Math.hypot(f.bx - f.x, f.by - f.y) < 2.6) {
+      if (f.dash && !f.binv) {
+        f.hp--; f.binv = 60; shake = 12; snd("pop"); popup(f.hp ? "DIRECT HIT!  " + f.hp + " TO GO" : "ECLIPSE SERPENT DEFEATED!");
+        if (f.dash < 15) f.dash = 15;
+        if (sw > 330) f.t += 420 - sw;
+        if (!f.hp) { f.dead = 1; f.shots = []; }
+      } else if (!f.dash && !f.binv) hurtF();
+    }
+  }
+  function stepMovers() {
+    movers.forEach(function (b) {
+      var m = b.mv, o = Math.sin(tick * m.sp + m.ph) * m.amp, nx = m.cx + m.lx * o, nz = m.cz + m.lz * o, cx0 = (b.x0 + b.x1) / 2, cz0 = (b.z0 + b.z1) / 2;
+      m.dx = nx - cx0; m.dz = nz - cz0; b.x0 += m.dx; b.x1 += m.dx; b.z0 += m.dz; b.z1 += m.dz;
+      if (p && p.ground && p.box === b && !deathT) { p.x += m.dx; p.z += m.dz; }
+    });
+  }
+  function respawn() { var sp = p.sparks; p = newPlayer(cp); prog = cpProg; chaseD = cpProg - 55; p.sparks = 0; p.inv = 90; cam.yaw = cp.h; cam.ty = cp.y; void sp; }
+  function attacking() { return !!p.zip || p.ultra || p.jumping || p.roll || p.dash > 0 || p.boosting || p.dive || p.pound || p.star > 0 || (ch === 2 && p.quillT > 0); }
+  function burst(x, y, z, col, n) { for (var i = 0; i < n; i++) parts.push({ x: x, y: y, z: z, vx: (Math.random() - 0.5) * 0.3, vy: Math.random() * 0.3 + 0.05, vz: (Math.random() - 0.5) * 0.3, t: 30 + Math.random() * 15, col: col, s: 0.12 + Math.random() * 0.1 }); }
+  function popup(s) { popups.push({ s: s, t: 90 }); }
+  function kill(e) { e.alive = false; score += 100; burst(e.x, e.y + 0.5, e.z, [1, 0.5, 0.1], 14); snd("pop"); }
+  function openItem(it) {
+    it.open = true; burst(it.x, it.y + 0.6, it.z, [0.9, 0.9, 1], 12); snd("item"); popup(ITEMNAME[it.type]);
+    if (it.type === "s") p.sparks += 10; else if (it.type === "h") p.shield = true; else if (it.type === "f") p.shoes = 600;
+    else if (it.type === "u") lives++; else if (it.type === "i") p.star = 600;
+  }
+  function blast(x, y, z, r) {
+    enemies.forEach(function (e) { if (e.alive && Math.hypot(e.x - x, e.z - z) < r && Math.abs(e.y - y) < 2) kill(e); });
+    items.forEach(function (it) { if (!it.open && Math.hypot(it.x - x, it.z - z) < r && Math.abs(it.y - y) < 2) openItem(it); });
+  }
+  function hurt() {
+    if (p.inv > 0 || p.star > 0 || p.ultra || deathT) return;
+    if (p.shield) { p.shield = false; p.inv = 90; snd("pop"); return; }
+    if (p.sparks <= 0) { die(); return; }
+    var n = Math.min(p.sparks, 12);
+    for (var i = 0; i < n; i++) { var a = i / n * Math.PI * 2; loose.push({ x: p.x, y: p.y + 1, z: p.z, vx: Math.cos(a) * 0.15, vy: 0.3 + Math.random() * 0.12, vz: Math.sin(a) * 0.15, t: 200 }); }
+    p.sparks = 0; p.inv = 120; p.vy = 0.3; p.ground = false; p.s = 0; p.roll = false; p.boosting = false; p.dash = 0; p.pound = false; p.dive = false; snd("lose");
+  }
+  function die() { if (deathT) return; lives--; deathT = 110; p.vy = 0.45; p.s = 0; p.roll = false; p.boosting = false; snd("die"); }
+  function land(fb) {
+    p.ground = true; p.box = fb; p.jumping = false; p.dive = false; p.dashUsed = false; p.hopUsed = false; p.sprung = false; p.glide = false; p.dash = 0;
+    if (p.pound) { p.pound = false; p.lag = 18; blast(p.x, p.y, p.z, 3); shake = 8; snd("pound"); for (var i = 0; i < 16; i++) { var a = i / 16 * Math.PI * 2; parts.push({ x: p.x, y: p.y + 0.2, z: p.z, vx: Math.cos(a) * 0.25, vy: 0.05, vz: Math.sin(a) * 0.25, t: 18, col: [0.85, 0.75, 0.55], s: 0.18 }); } }
+  }
+
+  // ---------------------------------------------------------------- player physics
+  function stepPlayer() {
+    var c = CH[ch], q = p;
+    if (q.inv > 0) q.inv--; if (q.star > 0) q.star--; if (q.shoes > 0) q.shoes--; if (q.qcd > 0) q.qcd--; if (q.quillT > 0) q.quillT--;
+    if (pressed.su && !q.ultra) {
+      if (shards === ALLSH && q.sparks >= 50) { q.ultra = true; snd("item"); popup("ULTRA " + c.n + "!"); burst(q.x, q.y + 0.8, q.z, [1, 0.85, 0.2], 24); }
+      else { popup(shards === ALLSH ? "ULTRA NEEDS 50 SPARKS" : "ULTRA NEEDS ALL 3 SHARDS"); snd("no"); }
+    }
+    if (q.ultra) {
+      if (tick % 60 === 0) q.sparks--;
+      if (q.sparks <= 0) { q.sparks = 0; q.ultra = false; popup("ULTRA FADED"); }
+      if (tick % 3 === 0) parts.push({ x: q.x + (Math.random() - 0.5), y: q.y + Math.random() * 1.5, z: q.z + (Math.random() - 0.5), vx: 0, vy: 0.03, vz: 0, t: 20, col: [1, 0.9, 0.3], s: 0.1 });
+    }
+    var top = c.top * (q.shoes ? 1.3 : 1) * (q.ultra ? 1.3 : 1);
+    var ix = (keys.r ? 1 : 0) - (keys.l ? 1 : 0), iz = (keys.u ? 1 : 0) - (keys.dn ? 1 : 0), dir = null;
+    if (q.lag > 0) { q.lag--; ix = iz = 0; q.s = 0; pressed.j = false; pressed.roll = false; }
+    var tIn = (keys.tl ? 1 : 0) - (keys.tr ? 1 : 0);
+    if (q.lag > 0) tIn = 0;
+    var tRate = !q.ground ? 0.05 : q.roll ? 0.045 : 0.075 - 0.025 * Math.min(1, q.s / top);
+    if (Z.ice && q.ground) tRate *= 0.8;
+    q.tv = (q.tv || 0) + (tIn * tRate - (q.tv || 0)) * (tIn ? 0.35 : 0.5);
+    if (Math.abs(q.tv) < 0.0005) q.tv = 0;
+    if (!q.loopR && !deathT) q.h += q.tv;
+    if (ix) { var fx0 = Math.sin(cam.yaw), fz0 = Math.cos(cam.yaw); dir = Math.atan2(fx0 * iz - fz0 * ix, fz0 * iz + fx0 * ix); }
+    else if (iz > 0) dir = q.h; // forward is always where the runner faces
+    else if (iz < 0) dir = q.h + Math.PI;
+    // riding a loop
+    if (q.loopR) {
+      var Lr = q.loopR, lp = Lr.lp; Lr.th += Math.max(0.32, Lr.sp) / lp.R;
+      var th = Math.min(Lr.th, Math.PI * 2), LP = loopPos(lp, th, lp.R);
+      q.x = LP.x; q.y = LP.y; q.z = LP.z; q.h = lp.h; q.jumping = true; q.ground = false; q.box = null; q.vy = 0; q.spin += 0.5; q.anim += 0.3;
+      lp.rg.forEach(function (r) { if (!r.got && r.th <= th) { r.got = true; q.sparks++; score += 10; snd("spark"); } });
+      if (tick % 2 === 0) parts.push({ x: q.x, y: q.y + 0.6, z: q.z, vx: 0, vy: 0, vz: 0, t: 16, col: Z.trim || [0.6, 0.9, 1], s: 0.14 });
+      if (Lr.th >= Math.PI * 2) {
+        q.loopR = null; var LE = loopPos(lp, Math.PI * 2, lp.R); q.x = LE.x + Math.sin(lp.h) * 0.6; q.z = LE.z + Math.cos(lp.h) * 0.6;
+        var fe = floorTop(q.x, q.z, LE.y + 1.5); q.y = fe > -1e8 ? fe : LE.y; q.box = fe > -1e8 ? hitBox : null; q.ground = fe > -1e8; q.jumping = false;
+        q.s = Math.max(Lr.sp, top * 1.08); q.loops++; score += 500; popup("LOOP!  +500"); snd("spring"); cam.yaw = lp.h;
+      }
+      return;
+    }
+
+    // NOVA: Stardrive Boost with a heat meter
+    q.boosting = false;
+    if (ch === 5 || ch === 6) {
+      if (q.lock > 0) { q.lock--; q.heat = Math.max(0, q.heat - 1 / 120); }
+      else if (keys.x) { q.boosting = true; q.heat += 1 / 110; if (q.heat >= 1) { q.heat = 1; q.lock = 120; q.boosting = false; snd("heat"); popup("OVERHEAT!"); } }
+      else q.heat = Math.max(0, q.heat - 1 / (ch === 5 ? 40 : 70));
+      if (q.boosting) { q.s = Math.max(q.s, top * (ch === 5 ? 1.45 : 1.75)); q.roll = false; if (tick % 6 === 0) snd("boost"); }
+    }
+    // KAI: Tongue Zip (homes onto the nearest foe, item box or boss)
+    if (ch === 4) {
+      if (q.zcd > 0) q.zcd--; if (q.tongue > 0) q.tongue = Math.max(0, q.tongue - 0.1);
+      if (pressed.x && !q.zcd && !q.zip) {
+        var best = null, bd = 11, fxk = Math.sin(q.h), fzk = Math.cos(q.h);
+        var cand = function (x, y, z) { var dx = x - q.x, dz = z - q.z, d = Math.hypot(dx, dz); if (d > bd || Math.abs(y - q.y) > 7) return; if (d > 0.5 && (dx * fxk + dz * fzk) / d < 0.2 && q.s > 0.05) return; bd = d; best = { x: x, y: y, z: z }; };
+        enemies.forEach(function (e) { if (e.alive) cand(e.x, e.y + 0.5, e.z); });
+        items.forEach(function (it) { if (!it.open) cand(it.x, it.y + 0.6, it.z); });
+        if (boss && !boss.dead && boss.cy > 0) cand(boss.x, boss.cy, boss.z);
+        q.zcd = 36; q.tongue = 1; snd("dash");
+        if (best) { q.zip = { x: best.x, y: best.y, z: best.z, t: 0 }; q.h = Math.atan2(best.x - q.x, best.z - q.z); q.ground = false; q.box = null; q.jumping = true; q.roll = false; }
+        else blast(q.x + fxk * 1.6, q.y, q.z + fzk * 1.6, 1.8);
+      }
+      if (q.zip) {
+        var Zp = q.zip; Zp.t++;
+        var zx = Zp.x - q.x, zy = Zp.y - 0.5 - q.y, zz = Zp.z - q.z, zd = Math.hypot(zx, zy, zz);
+        if (zd < 0.9 || Zp.t > 30) { q.zip = null; q.vy = 0.3; q.s = Math.min(q.s, 0.35); }
+        else { var zs = Math.min(0.85, zd); q.x += zx / zd * zs; q.y += zy / zd * zs; q.z += zz / zd * zs; q.vy = 0; q.s = 0.3; q.anim += 0.3; q.spin += 0.5; q.tongue = 1; return; }
+      }
+    }
+    // steering and speed
+    if (dir !== null) {
+      var df = angDiff(dir, q.h);
+      if (q.ground && !q.roll && !q.boosting && Math.abs(df) > 2.4 && q.s > 0.12) { q.s = Math.max(0, q.s - 0.035); q.skid = true; }
+      else {
+        q.skid = false;
+        var tr = q.boosting ? 0.015 : !q.ground ? 0.05 : q.roll ? 0.035 : 0.07 + 0.12 * (1 - Math.min(1, q.s / top));
+        if (Z.ice && q.ground) tr *= 0.6;
+        if (q.s < 0.05 && !q.boosting) tr = Math.PI;
+        q.h += Math.max(-tr, Math.min(tr, df));
+        if (!q.roll && q.s < top) q.s = Math.min(top, q.s + (q.ground ? c.acc : c.acc * 0.6));
+      }
+    } else { q.skid = false; if (q.ground && !q.roll && !q.boosting) q.s = Math.max(0, q.s - (Z.ice ? 0.004 : 0.014)); }
+    if (q.ground && !q.roll && !q.boosting && q.s > top) q.s = Math.max(top, q.s - 0.008);
+    if (q.roll) { q.s = Math.max(0, q.s - 0.0035); if (q.s < 0.06 && q.ground) q.roll = false; }
+    // slopes: rolling downhill builds real speed
+    if (q.ground && q.box && q.box.ya !== q.box.yb) {
+      var b = q.box, sl = (b.yb - b.ya) / b.L, hc = (b.ax === "x" ? Math.sin(q.h) : Math.cos(q.h)) * b.sg;
+      q.s -= sl * hc * (q.roll ? 0.04 : 0.016);
+      if (q.s < 0) { q.s = -q.s; q.h += Math.PI; }
+    }
+    // snowboard slopes: ride them at speed
+    if (q.board > 0) q.board--;
+    if (q.ground && q.box && q.box.board) { q.s = Math.max(q.s, 0.62); q.roll = false; q.board = 30; q.skid = false; }
+    q.s = Math.min(q.s, q.boosting ? 1.0 : 0.9);
+    if (pressed.roll && q.ground && q.s > 0.12 && !q.roll) { q.roll = true; snd("dash"); }
+    // jump and air moves
+    if (pressed.j && q.ground) {
+      q.vy = c.jump * (q.ultra ? 1.15 : 1) * (Z.grav ? 0.85 : 1); q.ground = false; q.box = null; q.jumping = true; q.roll = false; q.dashUsed = false; q.hopUsed = false; q.sprung = false; snd("jump");
+    } else if (pressed.j && !q.ground) {
+      if (ch === 0 && !q.dashUsed) { q.dashUsed = true; q.dash = 14; q.jumping = true; snd("dash"); }
+      if (ch === 3 && !q.hopUsed) {
+        q.hopUsed = true; q.vy = c.jump * 0.88; q.jumping = true; q.sprung = false; snd("heart");
+        for (var hi = 0; hi < 6; hi++) parts.push({ x: q.x, y: q.y + 0.3, z: q.z, vx: (Math.random() - 0.5) * 0.12, vy: -0.02, vz: (Math.random() - 0.5) * 0.12, t: 30, col: [1, 0.3, 0.5], s: 0.16, heart: true });
+      }
+    }
+    if (ch === 0 && pressed.x && !q.ground && !q.dashUsed) { q.dashUsed = true; q.dash = 14; q.jumping = true; snd("dash"); }
+    if (q.dash > 0) { q.dash--; q.s = Math.max(q.s, 0.72); q.vy = 0; }
+    if (!keys.j && q.jumping && !q.sprung && q.vy > 0.2) q.vy = 0.2;
+    // Juno: glide / dive
+    q.glide = ch === 1 && !q.ground && keys.j && q.vy < 0 && !q.dive;
+    // Nova: Star Hover, hold jump while falling to float for a moment (refills on landing)
+    if (ch === 5) {
+      if (q.ground) q.hov = 0;
+      else if (keys.j && q.vy < 0 && (q.hov || 0) < 80 && !q.boosting) { q.hov = (q.hov || 0) + 1; q.vy = GRAV * 0.8; if (tick % 4 === 0) burst(q.x, q.y - 0.2, q.z, [1, 0.88, 0.35], 1); }
+    }
+    if (ch === 1 && !q.ground && pressed.roll && !q.dive) { q.dive = true; q.s += 0.1; }
+    if (q.dive) q.vy = -0.9;
+    // Spikes: ground pound and quill burst
+    if (ch === 2 && !q.ground && pressed.roll && !q.pound) { q.pound = true; snd("dash"); }
+    if (q.pound) { q.s = 0; q.vy = -1.0; }
+    if (ch === 2 && pressed.x && !q.qcd) { q.qcd = 90; q.quillT = 16; blast(q.x, q.y, q.z, 2.4); snd("dash"); }
+    // gravity
+    if (!q.ground && !q.dash) {
+      if (q.boosting) q.vy = 0;
+      else { q.vy -= GRAV; if (q.glide && q.vy < -0.05) q.vy = -0.05; if (q.vy < -1.1) q.vy = -1.1; }
+    }
+    // spline tracks: follow the curve, grind rails, feel the slopes
+    var tb = q.ground && q.box && q.box.h !== undefined && q.box.dA !== undefined ? q.box : null;
+    if (tb && !q.boosting && q.s > 0.06) {
+      var tad = angDiff(tb.h, q.h);
+      if (Math.abs(tad) < 1.3 && !tIn && !ix) q.h += tad * (tb.rail ? 0.35 : 0.08);
+      else if (tb.rail && Math.abs(tad) < 1.3) q.h += tad * 0.12;
+    }
+    if (tb && tb.rail) { q.s = Math.max(q.s, top * 1.2); q.roll = false; q.grind = 8; if (tick % 4 === 0) { parts.push({ x: q.x, y: q.y + 0.1, z: q.z, vx: (Math.random() - 0.5) * 0.2, vy: 0.12, vz: (Math.random() - 0.5) * 0.2, t: 14, col: [1, 0.85, 0.3], s: 0.1 }); snd("boost"); } }
+    if (q.grind > 0) q.grind--;
+    if (tb && tb.lane) { if (tb.lane === "HIGH ROAD") q.hiT++; else q.loT++; }
+    if (tb && tb.sl) { q.s -= tb.sl * Math.cos(angDiff(q.h, tb.h)) * (q.roll ? 0.04 : 0.016); if (q.s < 0) { q.s = -q.s; q.h += Math.PI; } }
+    // loops: hit them fast enough to ride all the way round
+    for (var li = 0; li < loopsL.length; li++) {
+      var lq = loopsL[li]; if (lq.cd > 0) lq.cd--;
+      var lfx = Math.sin(lq.h), lfz = Math.cos(lq.h), ldx = q.x - lq.x, ldz = q.z - lq.z, lrel = ldx * lfx + ldz * lfz, llat = ldx * lfz - ldz * lfx;
+      if (Math.abs(llat) < lq.w / 2 + 0.3 && lrel > -1.5 && lrel < 0.1 && q.y - lq.y < lq.R * 2 && q.y - lq.y > -1.5 && Math.sin(q.h) * lfx + Math.cos(q.h) * lfz > 0.3 && q.s > 0.03) {
+        if (q.s >= 0.3 || q.boosting) { q.loopR = { lp: lq, th: 0, sp: Math.min(q.s, 0.75) }; q.roll = false; q.dash = 0; q.pound = false; q.dive = false; snd("dash"); return; }
+        q.x -= lfx * 1.4; q.z -= lfz * 1.4; q.s = 0; if (!lq.cd) { popup("TOO SLOW! RUN AT THE LOOP"); snd("no"); lq.cd = 60; }
+      }
+    }
+    // move in small sub-steps so nothing tunnels through the floor
+    var fx = Math.sin(q.h), fz = Math.cos(q.h), n = Math.max(1, Math.ceil(Math.max(q.s, Math.abs(q.vy)) / 0.2));
+    for (var i = 0; i < n; i++) {
+      var nx = q.x + fx * q.s / n, nz = q.z + fz * q.s / n;
+      if (wall(nx, nz, q.y)) {
+        if (!wall(nx, q.z, q.y)) nz = q.z; else if (!wall(q.x, nz, q.y)) nx = q.x; else { nx = q.x; nz = q.z; q.s = 0; }
+        q.s *= 0.9;
+      }
+      q.x = nx; q.z = nz;
+      var ft = floorTop(q.x, q.z, q.y + 0.6), fb = hitBox;
+      if (q.ground) { if (ft > -1e8 && q.y - ft < 0.7) { q.y = ft; q.box = fb; } else { q.ground = false; q.box = null; } }
+      if (!q.ground) {
+        q.y += q.vy / n; ft = floorTop(q.x, q.z, q.y + 0.6); fb = hitBox;
+        if (q.vy <= 0 && ft > -1e8 && q.y <= ft) { q.y = ft; q.vy = 0; land(fb); }
+      }
+    }
+    if (!q.ground && !deathT) { var fa = floorTop(q.x, q.z, q.y + 0.6), ha = hitBox; if (ha && ha.curb && ha.h !== undefined && q.y - fa < 2.5) { var ov2 = Math.abs(curLat) - (curW / 2 - 0.6); if (ov2 > 0) { var sg2 = curLat > 0 ? 1 : -1; q.x -= Math.cos(ha.h) * sg2 * ov2; q.z += Math.sin(ha.h) * sg2 * ov2; } } }
+    if (q.ground && q.box && q.box.curb && q.box.h !== undefined) { var lim = curW / 2 - 0.6, ov = Math.abs(curLat) - lim; if (ov > 0) { var sgn = curLat > 0 ? 1 : -1, hb = q.box.h; q.x -= Math.cos(hb) * sgn * ov; q.z += Math.sin(hb) * sgn * ov; } }
+    q.anim += q.s * 1.3; q.spin += 0.35 + q.s * 0.4;
+    if (q.y < PIT) die();
+    if (q.shoes && q.ground && q.s > 0.3 && tick % 3 === 0) parts.push({ x: q.x, y: q.y + 0.1, z: q.z, vx: 0, vy: 0.02, vz: 0, t: 14, col: [1, 0.6, 0.3], s: 0.14 });
+    if (q.boosting && tick % 2 === 0) parts.push({ x: q.x - fx * 0.6, y: q.y + 0.9, z: q.z - fz * 0.6, vx: -fx * 0.05, vy: 0, vz: -fz * 0.05, t: 12, col: [1, 0.55, 0.1], s: 0.2 });
+  }
+
+  // ---------------------------------------------------------------- world objects
+  function stepWorld() {
+    var pcx = p.x, pcy = p.y + 0.7, pcz = p.z;
+    function near(x, y, z, r) { var dx = pcx - x, dy = pcy - y, dz = pcz - z; return dx * dx + dy * dy + dz * dz < r * r; }
+    rings.forEach(function (r) { if (!r.got && near(r.x, r.y, r.z, 1.3)) { r.got = true; p.sparks++; score += 10; snd("spark"); burst(r.x, r.y, r.z, [1, 0.9, 0.3], 4); } });
+    for (var i = loose.length - 1; i >= 0; i--) {
+      var l = loose[i]; l.t--; l.vy -= 0.02; l.x += l.vx; l.y += l.vy; l.z += l.vz;
+      var f = floorTop(l.x, l.z, l.y + 0.5); if (f > -1e8 && l.y < f + 0.4 && l.vy < 0) { l.y = f + 0.4; l.vy = -l.vy * 0.6; }
+      if (l.t < 170 && near(l.x, l.y, l.z, 1.3)) { p.sparks++; snd("spark"); loose.splice(i, 1); continue; }
+      if (l.t <= 0 || l.y < BASE) loose.splice(i, 1);
+    }
+    enemies.forEach(function (e) {
+      if (!e.alive) return;
+      e.t += 0.025; var sw = Math.sin(e.t);
+      e.x = e.bx + e.px * sw * e.r; e.z = e.bz + e.pz * sw * e.r;
+      e.face = Math.atan2(e.px * Math.cos(e.t), e.pz * Math.cos(e.t)); e.y = floorTop(e.x, e.z, 1e9) + (e.hov ? e.hov + Math.sin(e.t * 3) * 0.25 : 0);
+      if (!deathT && near(e.x, e.y + 0.5, e.z, 1.3)) {
+        if (attacking() || (p.vy < 0 && p.y > e.y + 0.3)) {
+          kill(e); if (p.zip) { p.zip = null; p.vy = 0.36; p.jumping = true; }
+          if (!p.ground && !p.boosting && !p.pound) { p.vy = 0.34; p.jumping = true; p.dashUsed = false; p.hopUsed = false; p.dive = false; p.dash = 0; }
+        } else hurt();
+      }
+    });
+    items.forEach(function (it) {
+      if (it.open || deathT || !near(it.x, it.y + 0.6, it.z, 1.4)) return;
+      if (attacking() || (p.vy < 0 && p.y > it.y + 0.5)) { openItem(it); if (p.zip) { p.zip = null; p.vy = 0.36; p.jumping = true; } if (!p.ground && !p.pound) { p.vy = 0.3; p.jumping = true; p.dash = 0; } }
+      else { p.s = 0; var a = Math.atan2(p.x - it.x, p.z - it.z); p.x = it.x + Math.sin(a) * 1.45; p.z = it.z + Math.cos(a) * 1.45; }
+    });
+    springs.forEach(function (s) {
+      if (s.t) s.t--;
+      if (!deathT && Math.hypot(p.x - s.x, p.z - s.z) < 1.1 && p.y - s.y < 0.8 && p.y - s.y > -0.3 && p.vy <= 0.05) {
+        p.vy = 0.75; p.ground = false; p.box = null; p.jumping = true; p.sprung = true; p.roll = false; p.dive = false; p.pound = false; p.dashUsed = false; p.hopUsed = false; s.t = 12; snd("spring");
+      }
+    });
+    spikes.forEach(function (k) { if (!deathT && Math.abs(p.x - k.x) < 1.0 && Math.abs(p.z - k.z) < 1.0 && p.y - k.y < 0.7 && p.y - k.y > -0.5) { if (p.star > 0 || p.ultra) return; hurt(); if (!deathT) { p.vy = 0.36; p.ground = false; p.box = null; p.pound = false; } } });
+    pads.forEach(function (d) { if (d.t) d.t--; if (!deathT && p.ground && Math.hypot(p.x - d.x, p.z - d.z) < 1.4 && Math.abs(p.y - d.y) < 0.6) { p.s = Math.max(p.s, 0.85); p.h = d.h; if (!d.t) { snd("dash"); d.t = 30; } } });
+    geysers.forEach(function (g) {
+      var ph = (tick + g.ph) % 150;
+      if (ph === 112 && Math.hypot(cam.x - g.x, cam.z - g.z) < 40) snd("pound");
+      if (ph >= 112 && ph < 148 && !deathT && Math.hypot(p.x - g.x, p.z - g.z) < 1.3 && p.y < g.y + 6 && p.y > g.y - 1) { hurt(); if (!deathT) { p.vy = 0.4; p.ground = false; p.box = null; } }
+    });
+    hoops.forEach(function (o) {
+      if (o.t) o.t--;
+      if (!deathT && !o.t && Math.hypot(p.x - o.x, p.z - o.z) < 2.0 && Math.abs(p.y + 0.7 - o.y) < 2.2) { o.t = 40; p.h = o.h; p.s = 0.9; p.vy = Math.max(p.vy, 0.3); p.ground = false; p.box = null; p.jumping = true; p.sprung = true; p.dashUsed = false; p.hopUsed = false; snd("spring"); popup("STAR HOOP!"); }
+    });
+    posts.forEach(function (o) { if (!o.on && Math.hypot(p.x - o.x, p.z - o.z) < 4.6 && Math.abs(p.y - o.y) < 4) { o.on = true; cp = { x: o.x, y: o.y, z: o.z, h: o.h }; cpProg = prog; snd("post"); popup("CHECKPOINT"); } });
+    launchers.forEach(function (l) {
+      if (l.t) l.t--;
+      if (!deathT && !p.launch && Math.hypot(p.x - l.x, p.z - l.z) < 1.0 && Math.abs(p.y - l.y) < 0.5) {
+        var ld = Math.hypot(l.tx - l.x, l.tz - l.z) || 1; p.launch = { x0: p.x, y0: p.y, z0: p.z, x1: l.tx - (l.tx - l.x) / ld * 1.7, y1: l.ty, z1: l.tz - (l.tz - l.z) / ld * 1.7, t: 0, n: 55 }; p.h = Math.atan2(l.tx - l.x, l.tz - l.z); l.t = 20; snd("spring"); popup("SECRET!");
+      }
+    });
+    warps.forEach(function (w) {
+      if (w.used || deathT || Math.hypot(p.x - w.x, p.z - w.z) > 1.6 || Math.abs(p.y + 0.8 - (w.y + 2.4)) > 2.2) return;
+      w.used = true; burst(w.x, w.y + 2.4, w.z, [1, 0.9, 0.3], 30);
+      if (Z.sp !== undefined && !(shards & (1 << Z.sp))) { snd("item"); retPos = { x: w.x, y: w.y, z: w.z, h: p.h }; startSpecial(Z.sp); }
+      else { p.sparks += 20; popup("SHARD ALREADY FOUND  +20 SPARKS"); snd("item"); }
+    });
+    if (goal) { goal.spin += 0.05; if (!deathT && Math.hypot(p.x - goal.x, p.z - goal.z) < 2.6 && Math.abs(p.y - goal.y) < 4) finishZone(); }
+    for (i = parts.length - 1; i >= 0; i--) { var q = parts[i]; q.x += q.vx; q.y += q.vy; q.z += q.vz; q.vy -= q.heart ? -0.002 : 0.012; if (--q.t <= 0) parts.splice(i, 1); }
+    for (i = popups.length - 1; i >= 0; i--) if (--popups[i].t <= 0) popups.splice(i, 1);
+  }
+  function finishZone() {
+    var secs = Math.floor(time / 60), tb = secs < 60 ? 5000 : secs < 90 ? 3000 : secs < 120 ? 1000 : 500, sb = p.sparks * 100;
+    saveZone(Math.min(ZONES.length - 1, zi + 1));
+    spGo = Z.sp !== undefined && p.sparks >= 40 && !(shards & (1 << Z.sp));
+    res = { secs: secs, tb: tb, sb: sb, t0: tick }; score += tb + sb; state = "results"; snd("goal");
+  }
+  function stepCam() {
+    var oIn = (keys.cl ? 1 : 0) - (keys.cr ? 1 : 0);
+    cam.tv = (cam.tv || 0) + ((oIn * 0.06) - (cam.tv || 0)) * 0.2; if (Math.abs(cam.tv) < 0.0005) cam.tv = 0;
+    cam.yaw += cam.tv;
+    if (!drag && !oIn && !deathT && !p.loopR) { var cdf = angDiff(p.h, cam.yaw); if (Math.abs(cdf) < 2.6 || p.s > 0.08) cam.yaw += cdf * (0.1 + Math.min(0.08, p.s * 0.1)); }
+    cam.ty += (p.y - cam.ty) * 0.15;
+    var fx = Math.sin(cam.yaw), fz = Math.cos(cam.yaw), d = 7.5 + p.s * 3;
+    var ex = p.x - fx * d, ez = p.z - fz * d, ey = cam.ty + 3.4;
+    var fl = floorTop(ex, ez, ey + 3); if (fl > -1e8 && ey < fl + 1.2) ey = fl + 1.2;
+    cam.x += (ex - cam.x) * 0.35; cam.y += (ey - cam.y) * 0.2; cam.z += (ez - cam.z) * 0.35;
+    if (shake) shake--;
+  }
+
+  // ---------------------------------------------------------------- update
+  function update() {
+    tick++;
+    if (cheatMsg) cheatMsg--; if (cheatMsg2) cheatMsg2--; if (cheatMsg3) cheatMsg3--; if (lockMsg) lockMsg--;
+    if (pressed.m && state !== "title") muted = !muted;
+    if (state === "title") { titleT++; if (pressed.e || pressed.j) { state = "controls"; snd("ok"); } return; }
+    if (state === "controls") { if (pressed.e || pressed.j) { state = "select"; snd("ok"); } else if (pressed.esc) { state = "title"; titleT = 0; } return; }
+    if (state === "select") {
+      if (pressed.l || pressed.tl) { sel = (sel + CH.length - 1) % CH.length; snd("tick"); }
+      if (pressed.r || pressed.tr) { sel = (sel + 1) % CH.length; snd("tick"); }
+      if (pressed.e || pressed.j) { if (sel === 5 && !unlocked) { lockMsg = 90; snd("no"); } else { ch = sel; snd("ok"); var h0 = Math.min(hub.at, maxZone); enterHub(h0, h0, false); } }
+      else if (pressed.esc) state = "controls";
+      return;
+    }
+    if (state === "hub") {
+      if (hub.msg) hub.msg--;
+      if (hub.t < 1) { hub.t = Math.min(1, hub.t + 0.025); if (hub.t >= 1) hub.at = hub.to; return; }
+      var hd = (pressed.r || pressed.tr || pressed.u) ? 1 : (pressed.l || pressed.tl || pressed.dn) ? -1 : 0;
+      if (hd) { var nt = hub.at + hd; if (nt >= 0 && nt <= 6 && hubOpen(nt)) { hub.to = nt; hub.t = 0; snd("tick"); } else if (nt >= 0 && nt <= 6) { snd("no"); hub.msg = 90; } }
+      if (pressed.e || pressed.j) {
+        if (hub.at === 6) { if (!hub.keep) { score = 0; lives = 3; } FB = null; state = "secret"; snd("ok"); }
+        else { var sc0 = score, lv0 = lives; startGame(hub.at); if (hub.keep) { score = sc0; lives = lv0; } }
+      } else if (pressed.esc) { state = "select"; snd("tick"); }
+      return;
+    }
+    if (state === "results") { if (goal) goal.spin += 0.05; if (pressed.e) { if (spGo) { spGo = false; startSpecial(Z.sp); } else continueRun(); } return; }
+    if (state === "bossclear") { if (pressed.e) continueRun(); return; }
+    if (state === "special" || state === "final") {
+      if (pressed.p || pressed.esc) paused = !paused;
+      if (paused) return;
+      if (shake) shake--;
+      if (state === "special") stepSpecial(); else stepFinal();
+      return;
+    }
+    if (state === "spresult") { if (pressed.e) { if (retPos) returnFromSpecial(); else continueRun(); } return; }
+    if (state === "secret") { if (pressed.e) startFinal(); return; }
+    if (state === "over" || state === "ending" || state === "trueend") { if (pressed.e) { state = "title"; titleT = 0; zi = 0; SP = null; FB = null; retPos = null; buildLevel(); snd("ok"); } return; }
+    if (state === "play") {
+      if (pressed.p || pressed.esc) paused = !paused;
+      if (paused) return;
+      if (deathT) {
+        deathT--; p.vy -= 0.02; p.y += p.vy;
+        if (!deathT) { if (lives <= 0) { state = "over"; return; } respawn(); }
+        stepMovers(); stepWorld(); return;
+      }
+      time++; if (zoneCard) zoneCard--;
+      stepMovers(); if (p.launch) stepLaunch(); else stepPlayer(); stepWorld(); stepChase(); stepBoss(); stepCam();
+      var pdA = p.box && p.box.dA !== undefined ? p.box.dA : -99;
+      forks.forEach(function (f) { if (!f.shown && pdA > f.dA - 22 && pdA < f.dA + 4) { f.shown = true; popup(f.side > 0 ? "ROUTE SPLIT!  \u2190 LOW    HIGH \u2192" : "ROUTE SPLIT!  \u2190 HIGH    LOW \u2192"); snd("post"); } });
+    }
+  }
+
+  // ---------------------------------------------------------------- 3D drawing
+  function drawChar(c, x, y, z, h, o) {
+    var B = X(T(x, y, z), RY(h), RX(o.pitch || 0)), C = CH[c], dk = o.dark;
+    if (c === 6) c = 5;
+    var col = dk ? [0.06, 0.06, 0.08] : C.col, bel = dk ? [0.09, 0.09, 0.11] : C.bel, shoe = dk ? [0.05, 0.05, 0.06] : C.shoe, E = dk ? 0 : (o.flash ? 0.6 : 0);
+    if (o.gold) { col = [1, 0.8, 0.15]; bel = [1, 0.95, 0.65]; E = 0.3 + Math.sin(tick * 0.2) * 0.12; }
+    if (o.ball) {
+      var R = X(B, T(0, 0.62, 0), RX(o.spin || 0));
+      draw(SPH, X(R, S(0.62)), col, 0, E); draw(CUBE, X(R, T(0, 0, 0.52), S(0.5, 0.22, 0.22)), bel, 0, E);
+      if (c === 2) for (var qi = 0; qi < 5; qi++) draw(CONE, X(R, RX(qi * 1.25), T(0, 0.55, 0), S(0.09, 0.35, 0.09)), [0.95, 0.92, 0.8]);
+      if (c === 5) draw(CUBE, X(R, T(0, 0.15, 0.5), S(0.45, 0.1, 0.15)), C.vis || [1, 0.85, 0.2], 0, 0.8);
+      if (c === 4) draw(TOR, X(R, T(0, 0, -0.55), S(0.3)), shade(col, 0.7), 0, E);
+      return;
+    }
+    var r = Math.sin(o.run || 0) * 0.28, sides = [-1, 1];
+    draw(CUBE, X(B, T(-0.2, 0.1, r), S(0.22, 0.2, 0.42)), shoe, 0, E);
+    draw(CUBE, X(B, T(0.2, 0.1, -r), S(0.22, 0.2, 0.42)), shoe, 0, E);
+    draw(CUBE, X(B, T(-0.2, 0.13, r + 0.05), S(0.23, 0.06, 0.3)), dk ? shoe : [1, 1, 1], 0, E);
+    draw(CUBE, X(B, T(0.2, 0.13, -r + 0.05), S(0.23, 0.06, 0.3)), dk ? shoe : [1, 1, 1], 0, E);
+    draw(SPH, X(B, T(0, 0.72, 0), S(0.42, 0.46, 0.4)), col, 0, E);
+    draw(SPH, X(B, T(0, 0.68, 0.2), S(0.28, 0.34, 0.24)), bel, 0, E);
+    draw(SPH, X(B, T(0, 1.3, 0.08), S(0.36, 0.34, 0.36)), col, 0, E);
+    draw(SPH, X(B, T(0, 1.25, 0.42), S(0.14, 0.12, 0.22)), bel, 0, E);
+    draw(SPH, X(B, T(0, 1.27, 0.63), S(0.06)), [0.1, 0.1, 0.1]);
+    sides.forEach(function (s) {
+      if (c === 5) return;
+      draw(SPH, X(B, T(s * 0.13, 1.38, 0.36), S(0.08, 0.1, 0.05)), dk ? col : [1, 1, 1], 0, dk ? 0 : 0.2);
+      draw(SPH, X(B, T(s * 0.12, 1.38, 0.4), S(0.04, 0.06, 0.03)), [0, 0, 0]);
+    });
+    draw(CUBE, X(B, T(0, 0.45, -0.5), RX(-0.5), S(0.2, 0.12, 0.55)), shade(col, 0.8), 0, E);
+    sides.forEach(function (s) {
+      if (o.glide) draw(CUBE, X(B, T(s * 0.58, 1.0, 0), S(0.62, 0.1, 0.14)), col, 0, E);
+      else draw(CUBE, X(B, T(s * 0.42, 0.82, -r * 0.6 * s), RZ(s * 0.3), S(0.1, 0.36, 0.12)), col, 0, E);
+    });
+    if (c === 0) for (var i = 0; i < 3; i++) draw(SPH, X(B, T(0, 0.55 + i * 0.2, -0.3), S(0.3, 0.1, 0.14)), shade(col, 0.7), 0, E);
+    if (c === 1) sides.forEach(function (s) { draw(CONE, X(B, T(s * 0.16, 1.52, 0), RZ(-s * 0.25), S(0.09, 0.38, 0.09)), col, 0, E); });
+    if (c === 2) for (i = 0; i < 7; i++) draw(CONE, X(B, T((i - 3) * 0.1, 0.75 + (i % 2) * 0.25, -0.28), RX(-1.2 - (i % 2) * 0.3), RZ((i - 3) * 0.12), S(0.08, 0.6, 0.08)), dk ? col : [0.95, 0.92, 0.8]);
+    if (c === 3) { sides.forEach(function (s) { draw(CUBE, X(B, T(s * 0.15, 1.64, 0), RZ(s * 0.5), S(0.22, 0.14, 0.08)), dk ? col : [1, 0.15, 0.35], 0, E); }); draw(SPH, X(B, T(0, 1.62, 0), S(0.07)), dk ? col : [1, 0.15, 0.35]); }
+    if (c === 4) {
+      draw(TOR, X(B, T(0, 0.55, -0.62), RY(Math.PI / 2), S(0.32)), shade(col, 0.75), 0, E);
+      sides.forEach(function (s) { draw(SPH, X(B, T(s * 0.26, 1.36, 0.2), S(0.16)), dk ? col : shade(col, 1.15), 0, E); });
+      draw(CONE, X(B, T(0, 1.62, -0.05), RX(-0.4), S(0.2, 0.3, 0.12)), dk ? col : [1, 0.55, 0.15], 0, E);
+      if (o.tongue) draw(CUBE, X(B, T(0, 1.2, 0.6 + o.tongue * 0.6), S(0.08, 0.06, o.tongue * 1.2)), [1, 0.35, 0.5], 0, 0.3);
+    }
+    if (c === 5) {
+      draw(CUBE, X(B, T(0, 1.38, 0.33), S(0.42, 0.1, 0.1)), dk ? col : (C.vis || [1, 0.85, 0.2]), 0, dk ? 0 : 0.8);
+      sides.forEach(function (s) {
+        draw(CUBE, X(B, T(s * 0.18, 0.85, -0.38), S(0.14, 0.3, 0.14)), dk ? col : [0.4, 0.42, 0.48], 0, E);
+        if (o.boost) draw(CONE, X(B, T(s * 0.18, 0.85, -0.48), RX(-Math.PI / 2), S(0.1, 0.5 + Math.random() * 0.4, 0.1)), [1, 0.6, 0.1], 0, 1);
+      });
+    }
+  }
+  function drawBeetle(e) {
+    var B = X(T(e.x, e.y, e.z), RY(e.face)), t = Z.en;
+    if (t === "peng") {
+      draw(SPH, X(B, T(0, 0.65, 0), S(0.5, 0.65, 0.45)), [0.12, 0.14, 0.22]);
+      draw(SPH, X(B, T(0, 0.6, 0.18), S(0.36, 0.5, 0.32)), [0.95, 0.97, 1]);
+      draw(CONE, X(B, T(0, 0.95, 0.42), RX(Math.PI / 2), S(0.12, 0.3, 0.1)), [1, 0.6, 0.1]);
+      [-1, 1].forEach(function (s) {
+        draw(SPH, X(B, T(s * 0.15, 1.08, 0.36), S(0.07)), [0.4, 0.9, 1], 0, 0.9);
+        draw(CUBE, X(B, T(s * 0.5, 0.6, 0), RZ(s * (0.4 + Math.sin(tick * 0.3) * 0.3)), S(0.1, 0.5, 0.25)), [0.12, 0.14, 0.22]);
+        draw(CUBE, X(B, T(s * 0.18, 0.04, 0.12), S(0.2, 0.08, 0.35)), [1, 0.6, 0.1]);
+      });
+      draw(CUBE, X(B, T(0, 1.35, 0), RY(tick * 0.4), S(0.9, 0.04, 0.12)), [0.7, 0.75, 0.8]);
+      return;
+    }
+    if (t === "crab") {
+      draw(SPH, X(B, T(0, 0.45, 0), S(0.75, 0.38, 0.55)), [0.22, 0.18, 0.2]);
+      draw(CUBE, X(B, T(0, 0.62, 0), RY(0.6), S(0.9, 0.06, 0.08)), [1, 0.45, 0.05], 0, 1);
+      draw(CUBE, X(B, T(0, 0.62, 0), RY(-0.5), S(0.7, 0.06, 0.08)), [1, 0.45, 0.05], 0, 1);
+      [-1, 1].forEach(function (s) {
+        draw(SPH, X(B, T(s * 0.62, 0.55, 0.55), S(0.28, 0.2, 0.3)), [0.3, 0.22, 0.22]);
+        draw(SPH, X(B, T(s * 0.18, 0.85, 0.35), S(0.09)), [1, 0.8, 0.2], 0, 1);
+        for (var l = 0; l < 3; l++) draw(CUBE, X(B, T(s * 0.75, 0.2, -0.3 + l * 0.3), RZ(s * 0.6), S(0.4, 0.07, 0.07)), [0.3, 0.22, 0.22]);
+      });
+      return;
+    }
+    if (t === "drone") {
+      draw(SPH, X(B, T(0, 0.5, 0), S(0.85, 0.22, 0.85)), [0.6, 0.65, 0.75]);
+      draw(SPH, X(B, T(0, 0.68, 0), S(0.42, 0.32, 0.42)), [0.4, 1, 0.9], 0, 0.6);
+      for (var i = 0; i < 6; i++) { var a = i / 6 * Math.PI * 2 + tick * 0.05; draw(SPH, X(B, T(Math.sin(a) * 0.75, 0.45, Math.cos(a) * 0.75), S(0.09)), (i + (tick >> 3)) % 2 ? [1, 0.3, 0.8] : [1, 1, 0.4], 0, 1); }
+      draw(CONE, X(B, T(0, 0.3, 0), RX(Math.PI), S(0.3, 0.9 + Math.sin(tick * 0.2) * 0.1, 0.3)), [0.6, 1, 0.9], 0, 0.5);
+      return;
+    }
+    var B = X(T(e.x, e.y, e.z), RY(e.face));
+    draw(SPH, X(B, T(0, 0.5, 0), S(0.6, 0.42, 0.7)), [0.85, 0.15, 0.15]);
+    draw(CUBE, X(B, T(0, 0.52, 0), S(0.06, 0.4, 1.3)), [0.25, 0.05, 0.05]);
+    draw(SPH, X(B, T(0, 0.45, 0.62), S(0.3)), [0.2, 0.2, 0.25]);
+    [-1, 1].forEach(function (s) {
+      draw(SPH, X(B, T(s * 0.13, 0.55, 0.85), S(0.08)), [1, 0.9, 0.2], 0, 0.8);
+      draw(CUBE, X(B, T(s * 0.5, 0.15, 0), S(0.18, 0.3, 0.5)), [0.15, 0.15, 0.18]);
+    });
+  }
+  function drawWorld() {
+    gl.uniform3fv(U.uFog, FOG); gl.uniform1f(U.uFN, 45); gl.uniform1f(U.uFF, 170);
+    gl.uniform3fv(U.uG1, Z.g1); gl.uniform3fv(U.uG2, Z.g2); gl.uniform3fv(U.uW1, Z.w1); gl.uniform3fv(U.uW2, Z.w2);
+    draw(CUBE, X(T(p ? p.x : 0, BASE - 0.5, p ? p.z : 0), S(1200, 1, 1200)), Z.sea, 0, Z.seaE || 0.1);
+    if (Z.deco === "peaks") {
+      decor.forEach(function (g) {
+        var H2 = g.h * 2.6 + 10, R2 = g.s * 0.9;
+        draw(CONE, X(T(g.x, BASE, g.z), S(R2, H2, R2)), [0.52, 0.6, 0.74]);
+        draw(CONE, X(T(g.x, BASE + H2 * 0.6, g.z), S(R2 * 0.4, H2 * 0.4, R2 * 0.4)), [1, 1, 1], 0, 0.2);
+      });
+      for (var sn = 0; sn < 70; sn++) {
+        var sx = cam.x + ((sn * 37.7) % 50) - 25 + Math.sin(tick * 0.01 + sn) * 2, sz = cam.z + ((sn * 53.3) % 50) - 25, sy = cam.y + 14 - ((tick * 0.07 + sn * 7.7) % 26);
+        draw(SPH, X(T(sx, sy, sz), S(0.07)), [1, 1, 1], 0, 1);
+      }
+    }
+    if (Z.deco === "magma") {
+      decor.forEach(function (g, i) {
+        var H3 = g.h * 2 + 8;
+        draw(CONE, X(T(g.x, BASE, g.z), S(g.s * 0.8, H3, g.s * 0.8)), [0.2, 0.15, 0.15]);
+        draw(SPH, X(T(g.x, BASE + H3 * 0.92, g.z), S(g.s * 0.12, 0.6, g.s * 0.12)), [1, 0.45, 0.05], 0, 1);
+        if (i % 2 === 0) draw(CONE, X(T(g.x, BASE + H3 * 0.9, g.z), S(1.2, 4 + Math.sin(tick * 0.05 + i) * 2, 1.2)), [1, 0.6, 0.1], 0, 1);
+      });
+      for (var em = 0; em < 40; em++) {
+        var ex2 = cam.x + ((em * 41.3) % 60) - 30, ez2 = cam.z + ((em * 29.9) % 60) - 30, ey2 = BASE + ((tick * 0.06 + em * 5.3) % 40);
+        draw(SPH, X(T(ex2, ey2, ez2), S(0.09)), [1, 0.55, 0.1], 0, 1);
+      }
+    }
+    if (Z.deco === "space") {
+      decor.forEach(function (g, i) {
+        var py = BASE + 30 + (i % 4) * 14, cc = [[0.9, 0.5, 0.3], [0.4, 0.7, 1], [0.8, 0.4, 0.9]][g.c];
+        draw(SPH, X(T(g.x, py, g.z), S(g.s * 0.5)), cc, 0, 0.15);
+        if (i % 3 === 0) draw(TOR, X(T(g.x, py, g.z), RX(1.2), RZ(0.3), S(g.s * 0.85, g.s * 0.85, g.s * 0.25)), [1, 0.9, 0.7], 0, 0.3);
+      });
+      for (var st = 0; st < 90; st++) { var a2 = st * 2.39, r2 = 120 + (st % 7) * 12; draw(SPH, X(T(cam.x + Math.cos(a2) * r2, cam.y + 20 + Math.sin(st * 1.7) * 60, cam.z + Math.sin(a2) * r2), S(0.5)), [1, 1, 1], 0, 1); }
+    }
+    clouds.forEach(function (c) { draw(SPH, X(T(c.x, c.y, c.z), S(c.s, c.s * 0.3, c.s * 0.7)), [1, 1, 1], 0, 0.4); });
+    pillars.forEach(function (q) { var h = q.top - BASE; draw(CUBE, X(T(q.x, BASE + h / 2, q.z), S(1.6, h, 1.6)), Z.pil); });
+    boxes.forEach(function (b) {
+      var cxm = (b.x0 + b.x1) / 2, czm = (b.z0 + b.z1) / 2;
+      if (b.kind === "plat") { draw(CUBE, X(T(cxm, b.ya - 0.5, czm), S(b.x1 - b.x0, 1, b.z1 - b.z0)), Z.plat); return; }
+      if (b.kind === "mov") { draw(CUBE, X(T(cxm, b.ya - 0.5, czm), S(b.x1 - b.x0, 1, b.z1 - b.z0)), Z.plat, 0, 0.15); draw(CUBE, X(T(cxm, b.ya - 1.2, czm), S(1.2, 0.6, 1.2)), [0.3, 0.3, 0.35]); return; }
+      if (b.kind === "wall") { draw(CUBE, X(T(cxm, b.ya / 2 - 0.5, czm), S(b.x1 - b.x0, b.ya + 1, b.z1 - b.z0)), [0.36, 0.34, 0.4]); draw(CUBE, X(T(cxm, b.ya + 0.6, czm), S(b.x1 - b.x0, 0.3, b.z1 - b.z0)), [0.95, 0.72, 0.2], 0, 0.2); return; }
+      if (b.ya === b.yb) { draw(CUBE, X(T(cxm, b.ya - 0.5, czm), S(b.x1 - b.x0, 1, b.z1 - b.z0)), [1, 1, 1], 1); return; }
+      var rise = b.yb - b.ya, cy = (b.ya + b.yb) / 2 - 0.5, Ls = Math.hypot(b.L, rise);
+      if (b.ax === "z") draw(CUBE, X(T(cxm, cy, czm), RX(-Math.atan(rise / (b.L * b.sg))), S(b.x1 - b.x0, 1, Ls)), [1, 1, 1], 1);
+      else draw(CUBE, X(T(cxm, cy, czm), RZ(Math.atan(rise / (b.L * b.sg))), S(Ls, 1, b.z1 - b.z0)), [1, 1, 1], 1);
+    });
+    var ex = cam.x, ez = cam.z, ry = tick * 0.05;
+    ribs.forEach(function (r) {
+      var P = r.pts, tc = r.kind === "hi" ? [1, 0.72, 0.2] : r.kind === "lo" ? [0.3, 0.9, 1] : (Z.trim || [1, 1, 1]);
+      for (var i = 0; i < P.length - 1; i += 2) {
+        var a = P[i], b = P[Math.min(P.length - 1, i + 2)];
+        if (Math.abs(a.x - ex) + Math.abs(a.z - ez) > 190) continue;
+        var dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, hl = Math.hypot(dx, dz) || 1, Ls = Math.hypot(hl, dy) * 1.06, w = (a.w + b.w) / 2;
+        var M = X(T((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2), RY(Math.atan2(dx, dz)), RX(-Math.atan2(dy, hl)), RZ((a.bk + b.bk) / 2));
+        if (a.rail && b.rail) { draw(CUBE, X(M, T(0, -0.2, 0), S(0.6, 0.4, Ls)), [1, 0.8, 0.25], 0, 0.55); if ((i & 3) === 0) draw(CUBE, X(M, T(0, -1.3, 0), S(0.25, 2.0, 0.25)), [0.45, 0.42, 0.4]); continue; }
+        draw(CUBE, X(M, T(0, -0.6, 0), S(w, 1.2, Ls)), [1, 1, 1], 1);
+        var ch2 = a.curb ? 0.7 : 0.25;
+        draw(CUBE, X(M, T(w / 2, ch2 / 2 - 0.1, 0), S(0.35, ch2, Ls)), tc, 0, 0.45);
+        draw(CUBE, X(M, T(-w / 2, ch2 / 2 - 0.1, 0), S(0.35, ch2, Ls)), tc, 0, 0.45);
+        if ((i % 8) === 0) draw(CUBE, X(M, T(0, 0.02, 0), S(w * 0.86, 0.05, 0.35)), tc, 0, 0.3);
+      }
+    });
+    loopsL.forEach(function (lp) {
+      if (Math.abs(lp.x - ex) + Math.abs(lp.z - ez) > 220) return;
+      var N = 32, sL = lp.R * Math.PI * 2 / N * 1.12;
+      for (var k2 = 0; k2 < N; k2++) {
+        var th = (k2 + 0.5) / N * Math.PI * 2, LP = loopPos(lp, th, lp.R + 0.45), M = X(T(LP.x, LP.y, LP.z), RY(lp.h), RX(-th));
+        draw(CUBE, X(M, S(lp.w * 0.75, 0.9, sL)), [1, 1, 1], 1);
+        draw(CUBE, X(M, T(lp.w * 0.375, 0.5, 0), S(0.3, 0.7, sL)), Z.trim || [1, 1, 1], 0, 0.5);
+        draw(CUBE, X(M, T(-lp.w * 0.375, 0.5, 0), S(0.3, 0.7, sL)), Z.trim || [1, 1, 1], 0, 0.5);
+      }
+      lp.rg.forEach(function (r) { if (r.got) return; var RP = loopPos(lp, r.th, lp.R - 1.1); draw(TOR, X(T(RP.x, RP.y, RP.z), RY(ry), S(0.5)), [1, 0.82, 0.2], 0, 0.35); });
+    });
+    rings.forEach(function (r) { if (r.got) return; if (Math.abs(r.x - ex) + Math.abs(r.z - ez) > 180) return; draw(TOR, X(T(r.x, r.y + Math.sin(tick * 0.05 + r.x) * 0.1, r.z), RY(ry), S(0.5)), [1, 0.82, 0.2], 0, 0.35); });
+    loose.forEach(function (l) { if (l.t < 60 && (l.t >> 2) & 1) return; draw(TOR, X(T(l.x, l.y, l.z), RY(ry * 2), S(0.45)), [1, 0.82, 0.2], 0, 0.35); });
+    enemies.forEach(function (e) { if (e.alive) drawBeetle(e); });
+    items.forEach(function (it) {
+      if (it.open) { draw(CUBE, X(T(it.x, it.y + 0.1, it.z), S(1.1, 0.2, 1.1)), [0.4, 0.4, 0.45]); return; }
+      var B = X(T(it.x, it.y, it.z), RY(tick * 0.02));
+      draw(CUBE, X(B, T(0, 0.6, 0), S(1.1)), [0.75, 0.78, 0.84]);
+      [0, Math.PI / 2, Math.PI, Math.PI * 1.5].forEach(function (a) { draw(CUBE, X(B, RY(a), T(0, 0.65, 0.56), S(0.75, 0.6, 0.04)), [0.08, 0.1, 0.15]); });
+      draw(SPH, X(B, T(0, 0.65, 0), S(0.27)), ITEMCOL[it.type], 0, 0.7);
+    });
+    launchers.forEach(function (l) {
+      draw(CUBE, X(T(l.x, l.y + 0.03, l.z), S(1.4, 0.06, 1.4)), Z.g2, 0, 0);
+      draw(CUBE, X(T(l.x, l.y + 0.07, l.z), S(0.5, 0.04, 0.5)), [1, 0.9, 0.4], 0, 0.15 + 0.15 * Math.sin(tick * 0.08) + (l.t ? 0.6 : 0));
+    });
+    warps.forEach(function (w) {
+      if (w.used) return;
+      var have = Z.sp !== undefined && (shards & (1 << Z.sp)), Bw = X(T(w.x, w.y + 2.4 + Math.sin(tick * 0.04) * 0.15, w.z), RY(tick * 0.03));
+      draw(TOR, X(Bw, S(1.6)), have ? [0.7, 0.7, 0.75] : [1, 0.82, 0.15], 0, have ? 0.2 : 0.55 + 0.2 * Math.sin(tick * 0.1));
+      if (!have) draw(SPH, X(Bw, S(0.25)), [1, 1, 1], 0, 1);
+    });
+    springs.forEach(function (s) {
+      var c = s.t ? 0.15 : 0.35;
+      draw(CUBE, X(T(s.x, s.y + 0.1, s.z), S(1.3, 0.2, 1.3)), [0.5, 0.5, 0.55]);
+      draw(CUBE, X(T(s.x, s.y + 0.2 + c / 2, s.z), S(0.5, c, 0.5)), [0.3, 0.3, 0.3]);
+      draw(CUBE, X(T(s.x, s.y + 0.3 + c, s.z), S(1.1, 0.22, 1.1)), [1, 0.85, 0.1], 0, 0.2);
+    });
+    spikes.forEach(function (k) {
+      draw(CUBE, X(T(k.x, k.y + 0.05, k.z), S(1.8, 0.1, 1.8)), [0.25, 0.25, 0.3]);
+      for (var a = 0; a < 4; a++) draw(CONE, X(T(k.x + (a & 1 ? 0.45 : -0.45), k.y + 0.1, k.z + (a & 2 ? 0.45 : -0.45)), S(0.32, 0.8, 0.32)), Z.spk || [0.85, 0.87, 0.92], 0, Z.spkE || 0.1);
+    });
+    pads.forEach(function (d) {
+      var P = X(T(d.x, d.y + 0.06, d.z), RY(d.h));
+      draw(CUBE, X(P, S(2.2, 0.12, 2.2)), [0.2, 0.2, 0.25]);
+      for (var a = 0; a < 2; a++) draw(CONE, X(P, T(0, 0.12, -0.4 + a * 0.75), RX(Math.PI / 2), S(0.6, 0.6, 0.06)), (tick >> 3) % 2 === a ? [1, 0.9, 0.2] : [1, 0.4, 0.1], 0, 0.6);
+    });
+    posts.forEach(function (o) {
+      draw(CUBE, X(T(o.x, o.y + 1.2, o.z), S(0.15, 2.4, 0.15)), [0.35, 0.35, 0.45]);
+      draw(SPH, X(T(o.x, o.y + 2.6, o.z), S(0.28)), o.on ? [1, 0.25, 0.2] : [0.25, 0.45, 1], 0, 0.6);
+    });
+    geysers.forEach(function (g) {
+      var ph = (tick + g.ph) % 150;
+      draw(CUBE, X(T(g.x, g.y + 0.1, g.z), S(1.8, 0.2, 1.8)), [0.18, 0.14, 0.15]);
+      draw(SPH, X(T(g.x, g.y + 0.2, g.z), S(0.7, 0.1, 0.7)), [1, 0.45, 0.05], 0, ph >= 90 ? 0.6 + ((tick >> 2) & 1) * 0.4 : 0.3);
+      if (ph >= 112 && ph < 148) { var hh = Math.min(6, (ph - 111) * 1.2); draw(CONE, X(T(g.x, g.y, g.z), S(1.0, hh, 1.0)), [1, 0.55, 0.1], 0, 1); draw(SPH, X(T(g.x, g.y + hh, g.z), S(0.6)), [1, 0.85, 0.3], 0, 1); }
+    });
+    hoops.forEach(function (o) {
+      var Bh = X(T(o.x, o.y, o.z), RY(o.h));
+      draw(TOR, X(Bh, RZ(tick * 0.03), S(2.0)), o.t ? [1, 1, 1] : [0.4, 1, 1], 0, 0.7);
+      for (var hk = 0; hk < 5; hk++) { var ha = hk / 5 * Math.PI * 2 + tick * 0.06; draw(SPH, X(Bh, T(Math.cos(ha) * 2, Math.sin(ha) * 2, 0), S(0.18)), [1, 1, 0.5], 0, 1); }
+    });
+    if (Z.chase && (C.length || segs.length)) {
+      var lp = chasePos(chaseD), Bl = X(T(lp.x, lp.y, lp.z), RY(lp.h));
+      draw(CUBE, X(Bl, T(0, 3, 0), S(Z.T ? 34 : 16, 24, 1.2)), [1, 0.42, 0.06], 0, 1);
+      draw(CUBE, X(Bl, T(0, -0.2, -6), S(14, 1.2, 12)), [1, 0.55, 0.12], 0, 0.9);
+      for (var lb = 0; lb < 10; lb++) draw(SPH, X(Bl, T(((lb * 37) % 14) - 7, 1 + ((tick * 0.2 + lb * 3.1) % 10), 0.6 + (lb % 3) * 0.4), S(0.35)), [1, 0.85, 0.3], 0, 1);
+    }
+    if (goal) {
+      var G = X(T(goal.x, goal.y, goal.z));
+      draw(CUBE, X(G, T(0, 1.7, 0), S(0.2, 3.4, 0.2)), [0.5, 0.5, 0.58]);
+      var Sg = X(G, T(0, 3.9, 0), RY(goal.spin));
+      draw(CUBE, X(Sg, S(1.7, 1.7, 0.15)), [0.9, 0.9, 0.95]);
+      draw(SPH, X(Sg, T(0, 0, 0.1), S(0.55, 0.55, 0.08)), [0.12, 0.71, 0.65], 0, 0.3);
+      draw(SPH, X(Sg, T(0, 0, -0.1), S(0.55, 0.55, 0.08)), [0.12, 0.71, 0.65], 0, 0.3);
+    }
+    parts.forEach(function (q) { draw(SPH, X(T(q.x, q.y, q.z), S(q.s)), q.col, 0, 0.6); });
+    if (boss) drawBoss();
+  }
+  function drawBoss() {
+    var b = boss, fl = b.inv && (b.inv >> 2) & 1, E = fl ? 0.8 : 0, i;
+    b.shots.forEach(function (s) {
+      draw(SPH, X(T(s.x, 0.05, s.z), S(1.0, 0.05, 1.0)), [0.1, 0.1, 0.12]);
+      if (b.type === "titan") draw(CONE, X(T(s.x, s.y, s.z), RX(Math.PI), S(0.4, 1.4, 0.4)), [0.7, 0.92, 1], 0, 0.4);
+      else if (b.type === "wyrm") draw(SPH, X(T(s.x, s.y, s.z), S(0.5)), [1, 0.5, 0.1], 0, 1);
+      else draw(SPH, X(T(s.x, s.y, s.z), S(0.45)), [1, 0.5, 1], 0, 1);
+    });
+    if (b.type === "titan") {
+      var B = X(T(b.x, b.y, b.z), RY(b.dir)), body = [0.92, 0.95, 1], dk = [0.35, 0.42, 0.55], wob = b.mode === 1 ? Math.sin(tick * 0.8) * 0.1 : 0;
+      B = X(B, RZ(wob));
+      draw(SPH, X(T(b.x, 0.05, b.z), S(2.4, 0.05, 2.4)), [0.4, 0.5, 0.6]);
+      draw(SPH, X(B, T(0, 1.4, 0), S(2.1, 1.6, 1.9)), body, 0, E);
+      draw(SPH, X(B, T(0, 3.3, 0.2), S(1.3, 1.1, 1.2)), body, 0, E);
+      draw(CUBE, X(B, T(0, 2.4, 0), S(3.2, 0.5, 2.6)), dk, 0, E);
+      draw(CUBE, X(B, T(0, 3.4, 1.15), S(1.6, 0.35, 0.2)), b.vul ? [1, 1, 0.3] : [0.3, 0.8, 1], 0, b.vul ? 0.6 + ((tick >> 3) & 1) * 0.4 : 0.8);
+      [-1, 1].forEach(function (s) {
+        draw(CONE, X(B, T(s * 0.9, 4.1, 0), RZ(-s * 0.5), S(0.3, 1.1, 0.3)), [0.7, 0.92, 1], 0, 0.3);
+        draw(SPH, X(B, T(s * 2.3, 1.6, 0.6), S(0.75, 1.1, 0.75)), dk, 0, E);
+        draw(CUBE, X(B, T(s * 0.9, 0.25, 0.4), S(1.0, 0.5, 1.4)), dk, 0, E);
+      });
+      if (b.vul) for (i = 0; i < 4; i++) { var a = tick * 0.1 + i * 1.57; draw(SPH, X(T(b.x + Math.cos(a) * 1.4, 5 + b.y, b.z + Math.sin(a) * 1.4), S(0.2)), [1, 1, 0.4], 0, 1); }
+      return;
+    }
+    if (b.type === "wyrm") {
+      var hx = b.x, hz = b.z, hy = b.hy;
+      draw(SPH, X(T(b.mx, 0.06, b.mz), S(b.mode === 0 ? 2.4 : 2.0, 0.06, b.mode === 0 ? 2.4 : 2.0)), [1, 0.4, 0.05], 0, b.mode === 0 ? 0.4 + ((tick >> 3) & 1) * 0.5 : 0.8);
+      if (hy > -2) {
+        for (i = 9; i >= 1; i--) {
+          var f = i / 10, bx = b.mx + (hx - b.mx) * (1 - f), bz = b.mz + (hz - b.mz) * (1 - f), by = -2 + (hy + 2) * (1 - f) + Math.sin((1 - f) * Math.PI) * 3 * (b.mode >= 2 ? 1 : 0);
+          draw(SPH, X(T(bx, by, bz), S(1.1 - f * 0.3)), i % 2 ? [0.35, 0.12, 0.08] : [0.6, 0.2, 0.08], 0, E);
+          if (i % 2) draw(CONE, X(T(bx, by + 0.8, bz), S(0.25, 0.7, 0.25)), [1, 0.5, 0.1], 0, 0.8);
+        }
+        var Bw = X(T(hx, hy, hz), RY(Math.atan2(p.x - hx, p.z - hz)));
+        draw(SPH, X(Bw, T(0, 0.9, 0), S(1.5, 1.1, 1.8)), [0.4, 0.14, 0.08], 0, E);
+        draw(CUBE, X(Bw, T(0, 0.5, 1.3), S(1.6, 0.3, 1.2)), [0.25, 0.08, 0.05], 0, E);
+        draw(SPH, X(Bw, T(0, 1.0, 1.5), S(0.7, 0.35, 0.4)), [1, 0.5, 0.1], 0, b.vul ? 0.5 + ((tick >> 3) & 1) * 0.5 : 0.9);
+        [-1, 1].forEach(function (s) {
+          draw(SPH, X(Bw, T(s * 0.6, 1.5, 1.2), S(0.2)), b.vul ? [1, 1, 0.3] : [1, 0.85, 0.2], 0, 1);
+          draw(CONE, X(Bw, T(s * 0.8, 1.8, -0.3), RX(-0.7), RZ(-s * 0.5), S(0.25, 1.2, 0.25)), [0.2, 0.15, 0.15], 0, E);
+        });
+        if (b.vul) for (i = 0; i < 4; i++) { var a2 = tick * 0.1 + i * 1.57; draw(SPH, X(T(hx + Math.cos(a2) * 1.2, hy + 2.6, hz + Math.sin(a2) * 1.2), S(0.2)), [1, 1, 0.4], 0, 1); }
+      }
+      return;
+    }
+    var Bn = X(T(b.x, b.y, b.z), RY(b.t * 0.02));
+    draw(SPH, X(T(b.x, 0.05, b.z), S(2.0, 0.05, 2.0)), [0.1, 0.08, 0.2]);
+    draw(SPH, X(Bn, S(1.5)), b.vul ? [1, 1, 0.5] : [0.75, 0.4, 1], 0, b.vul ? 0.6 + ((tick >> 3) & 1) * 0.4 : 0.4 + E);
+    for (i = 0; i < 6; i++) { var ca = i / 6 * Math.PI * 2; draw(CUBE, X(Bn, RY(ca), T(0, b.vul ? 2.2 : 1.1, 1.35), RX(b.vul ? -0.9 : -0.2), S(0.5, 0.9, 0.3)), [0.3, 0.25, 0.5], 0, E); }
+    draw(TOR, X(Bn, RX(Math.PI / 2), S(2.4, 2.4, 1.2)), [1, 0.85, 0.3], 0, 0.4);
+    for (i = 0; i < 5; i++) { var ka = i / 5 * Math.PI * 2; draw(CONE, X(Bn, T(Math.sin(ka) * 0.9, 1.3, Math.cos(ka) * 0.9), S(0.22, 0.9, 0.22)), [1, 0.85, 0.3], 0, 0.5); }
+    if (b.beam) for (var k = 0; k < 2; k++) {
+      var ba = b.a + k * Math.PI, ux = Math.sin(ba), uz = Math.cos(ba), L2 = 34 * b.beam;
+      draw(CUBE, X(T(b.x + ux * L2 / 2, 0.55, b.z + uz * L2 / 2), RY(ba), S(b.beam >= 1 ? 0.5 : 0.12, b.beam >= 1 ? 0.5 : 0.12, L2)), b.beam >= 1 ? [1, 0.3, 0.9] : [1, 0.8, 1], 0, 1);
+      draw(CUBE, X(T(b.x, (b.y + 0.55) / 2, b.z), S(0.3, b.y - 0.55, 0.3)), [1, 0.5, 1], 0, 1);
+    }
+  }
+  function drawShard(x, y, z, sc, col) {
+    var Bs = X(T(x, y + Math.sin(tick * 0.05) * 0.3, z), RY(tick * 0.04), S(sc));
+    draw(CONE, X(Bs, S(0.6, 1.2, 0.6)), col, 0, 0.7); draw(CONE, X(Bs, RX(Math.PI), S(0.6, 1.2, 0.6)), col, 0, 0.7);
+  }
+  function drawSpecial() {
+    var s = SP, D = s.D, i;
+    gl.uniform3fv(U.uFog, D.sky); gl.uniform1f(U.uFN, 25); gl.uniform1f(U.uFF, 95);
+    for (i = 0; i < 36; i++) {
+      var cd = Math.floor(s.d / 140) * 140 + ((i * 53) % 280) - 60, cx2 = ((i * 37) % 44) - 22, cz2 = ((i * 23) % 40) - 20;
+      if (Math.abs(cx2) < 9 && Math.abs(cz2) < 9) cx2 += cx2 < 0 ? -9 : 9;
+      draw(SPH, X(T(cx2, -cd, cz2), S(4 + i % 3, 1.2, 3 + i % 4)), D.cl, 0, 0.35);
+    }
+    s.objs.forEach(function (o) {
+      if (o.got || o.d < s.d - 3 || o.d > s.d + 80) return;
+      if (o.t === "r") draw(TOR, X(T(o.x, -o.d, o.z), RX(Math.PI / 2), S(1.6)), D.ring, 0, 0.55);
+      else { var Bm = X(T(o.x, -o.d, o.z), RY(tick * 0.05)); draw(SPH, X(Bm, S(0.6)), [0.12, 0.12, 0.15]); for (var k = 0; k < 6; k++) draw(CONE, X(Bm, RZ(k * 1.05), T(0, 0.5, 0), S(0.15, 0.5, 0.15)), [1, 0.25, 0.2], 0, 0.6); }
+    });
+    if (D.len - s.d < 80) drawShard(0, -(D.len + 8), 0, 1.6, D.sh);
+    if (!(s.inv && (tick >> 2) & 1)) drawChar(ch, s.x, -s.d - 0.4, s.z - 0.8, 0, { pitch: Math.PI / 2, glide: true, run: 0 });
+  }
+  function drawRaptor(f) {
+    var x = f.bx, y = f.by, z = f.z + f.bdz, fl = f.binv && (f.binv >> 2) & 1, E = fl ? 0.9 : 0, body = [0.1, 0.08, 0.16], acc = [1, 0.75, 0.2];
+    for (var k = 12; k >= 1; k--) {
+      var sx = x + Math.sin(f.t * 0.06 - k * 0.55) * k * 0.35, sy = y + Math.cos(f.t * 0.05 - k * 0.6) * k * 0.2, sz = z + k * 1.5, r = 1.25 - k * 0.06;
+      draw(SPH, X(T(sx, sy, sz), S(r)), k % 2 ? body : [0.2, 0.12, 0.3], 0, E);
+      draw(CONE, X(T(sx, sy + r * 0.8, sz), S(0.2, 0.7, 0.2)), acc, 0, 0.7);
+    }
+    var B = X(T(x, y, z), RY(Math.PI));
+    draw(SPH, X(B, S(1.5, 1.1, 1.9)), body, 0, E);
+    draw(CUBE, X(B, T(0, -0.5, 1.3), S(1.6, 0.35, 1.4)), [0.15, 0.1, 0.22], 0, E);
+    draw(TOR, X(B, T(0, 0.2, -0.6), S(1.9, 1.9, 0.6)), acc, 0, 0.8);
+    [-1, 1].forEach(function (s) {
+      draw(SPH, X(B, T(s * 0.55, 0.45, 1.5), S(0.2)), [1, 0.2, 0.25], 0, 1);
+      draw(CONE, X(B, T(s * 0.8, 0.9, -0.4), RX(-0.8), RZ(-s * 0.4), S(0.25, 1.6, 0.25)), acc, 0, 0.5);
+    });
+  }
+  function drawFinal() {
+    var f = FB, i;
+    gl.uniform3fv(U.uFog, [0.08, 0.04, 0.18]); gl.uniform1f(U.uFN, 45); gl.uniform1f(U.uFF, 150);
+    for (i = 0; i < 30; i++) { var cz = f.z + (((i * 23 - f.z * 1.0) % 160) + 160) % 160 - 20; draw(SPH, X(T(((i * 53) % 60) - 30, -7 - (i % 3) * 2, cz), S(6, 1.2, 3.5)), [0.3, 0.22, 0.45], 0, 0.1); }
+    for (i = 0; i < 50; i++) { var a = i * 2.39; draw(SPH, X(T(Math.cos(a) * (30 + i % 7 * 6), 10 + Math.abs(Math.sin(a)) * 25, f.z + 120 + (i % 5) * 10), S(0.4)), [1, 1, 1], 0, 1); }
+    if (!(f.dead && f.dead > 150)) drawRaptor(f);
+    f.shots.forEach(function (s) { draw(SPH, X(T(s.x, s.y, f.z + s.dz), S(0.45)), [1, 0.25, 0.95], 0, 1); });
+    f.rings.forEach(function (r) { draw(TOR, X(T(r.x, r.y, f.z + r.dz), RY(tick * 0.08), S(0.55)), [1, 0.82, 0.2], 0, 0.4); });
+    if (f.dead) for (i = 0; i < 6; i++) draw(SPH, X(T(f.bx + Math.sin(i + tick * 0.3) * 2, f.by + Math.cos(i * 2 + tick * 0.2) * 1.5, f.z + f.bdz), S(0.6 + Math.random())), [1, 0.6, 0.2], 0, 1);
+    if (!(f.inv && (tick >> 2) & 1) && !(f.down && (tick >> 1) & 1)) {
+      var dashing = f.dash > 0 && f.dash < 15;
+      drawChar(ch, f.x, f.y - 0.7, f.z + f.dz, 0, { gold: true, glide: !dashing, ball: dashing, spin: tick * 0.5, run: 0 });
+      for (i = 0; i < 4; i++) draw(SPH, X(T(f.x + Math.sin(tick * 0.3 + i * 1.6) * 0.5, f.y - 0.2 + Math.cos(tick * 0.25 + i) * 0.5, f.z + f.dz - 0.8 - i * 0.5), S(0.12)), [1, 0.9, 0.3], 0, 1);
+    }
+  }
+  function drawPlayer() {
+    if (p.inv > 0 && (tick >> 2) & 1 && !deathT) return;
+    var ball = (p.jumping || p.roll || p.dash > 0 || p.zip) && !(p.board > 0 && p.ground) && !p.glide && !p.boosting && !p.pound && !(ch === 1 && p.dive);
+    drawChar(ch, p.x, p.y, p.z, p.h, { tongue: ch === 4 ? p.tongue : 0, run: p.anim, ball: ball, spin: p.spin, glide: p.glide, boost: p.boosting, flash: p.star > 0 && (tick >> 2) & 1, gold: p.ultra });
+    if (ch === 2 && p.quillT > 0) {
+      var rr = 0.6 + (16 - p.quillT) * 0.12;
+      for (var i = 0; i < 12; i++) { var a = i / 12 * Math.PI * 2; draw(CONE, X(T(p.x + Math.sin(a) * rr, p.y + 0.8, p.z + Math.cos(a) * rr), RY(a), RX(Math.PI / 2), S(0.08, 0.5, 0.08)), [0.95, 0.92, 0.8]); }
+    }
+    if (p.board > 0) { draw(CUBE, X(T(p.x, p.y + 0.06, p.z), RY(p.h), S(0.75, 0.1, 2.0)), [0.15, 0.55, 1], 0, 0.15); draw(CUBE, X(T(p.x, p.y + 0.12, p.z), RY(p.h), S(0.5, 0.03, 1.6)), [1, 0.9, 0.3], 0, 0.3); }
+    if (p.shield) for (i = 0; i < 6; i++) { var b = tick * 0.08 + i * 1.05; draw(SPH, X(T(p.x + Math.sin(b) * 1, p.y + 0.8 + Math.sin(b * 2) * 0.5, p.z + Math.cos(b) * 1), S(0.12)), [0.3, 0.6, 1], 0, 0.9); }
+    if (p.star > 0) for (i = 0; i < 5; i++) { var c = -tick * 0.12 + i * 1.26; draw(SPH, X(T(p.x + Math.sin(c) * 0.9, p.y + 0.4 + i * 0.25, p.z + Math.cos(c) * 0.9), S(0.1)), [1, 1, 0.7], 0, 1); }
+  }
+  var selA = 0;
+  function drawSelect() {
+    gl.uniform3fv(U.uFog, [0.08, 0.04, 0.2]); gl.uniform1f(U.uFN, 30); gl.uniform1f(U.uFF, 80);
+    selA += angDiff(-sel / CH.length * Math.PI * 2, selA) * 0.15;
+    draw(SPH, X(T(0, 199.75, 0), S(4.8, 0.25, 4.8)), [0.32, 0.2, 0.6], 0, 0.15);
+    draw(TOR, X(T(0, 199.95, 0), RX(Math.PI / 2), S(4.3, 4.3, 1.2)), [1, 0.8, 0.25], 0, 0.5);
+    for (var st = 0; st < 40; st++) { var sa = st * 2.4 + tick * 0.002; draw(SPH, X(T(Math.cos(sa) * (14 + st % 5 * 3), 203 + Math.sin(st * 1.3) * 5, 10 + Math.sin(sa) * 8), S(0.08)), [1, 1, 1], 0, 1); }
+    for (var i = 0; i < CH.length; i++) {
+      var a = selA + i / CH.length * Math.PI * 2, on = i === sel, lockd = i === 5 && !unlocked;
+      drawChar(i, Math.sin(a) * 3.2, 200, -Math.cos(a) * 3.2, on ? Math.PI + Math.sin(tick * 0.03) * 0.5 : a + Math.PI, { run: on && !lockd ? tick * 0.2 : 0, dark: lockd, glide: false });
+    }
+  }
+  function drawHub() {
+    gl.uniform3fv(U.uFog, [0.07, 0.09, 0.25]); gl.uniform1f(U.uFN, 50); gl.uniform1f(U.uFF, 150);
+    gl.uniform3fv(U.uG1, [0.95, 0.97, 1]); gl.uniform3fv(U.uG2, [0.8, 0.86, 0.96]); gl.uniform3fv(U.uW1, [0.5, 0.55, 0.7]); gl.uniform3fv(U.uW2, [0.4, 0.45, 0.6]);
+    draw(CUBE, X(T(0, -3, 8), S(400, 1, 400)), [0.1, 0.22, 0.5], 0, 0.15);
+    [[-24, 4, [0.88, 0.94, 1]], [1, -1, [0.32, 0.2, 0.18]], [24, 9, [0.3, 0.26, 0.58]]].forEach(function (I, j) {
+      draw(SPH, X(T(I[0], -2.6, I[1]), S(15, 4, 12)), I[2], 0, j === 1 ? 0.05 : 0.1);
+      for (var d = 0; d < 5; d++) {
+        var dx = I[0] + Math.cos(d * 1.3 + j) * 10, dz = I[1] + Math.sin(d * 1.3 + j) * 8;
+        if (j === 0) { draw(CONE, X(T(dx, -1, dz), S(2, 6 + d, 2)), [0.6, 0.7, 0.85]); draw(CONE, X(T(dx, 2 + d * 0.6, dz), S(0.9, 2.5, 0.9)), [1, 1, 1], 0, 0.2); }
+        if (j === 1) { draw(CONE, X(T(dx, -1, dz), S(2.4, 5 + d, 2.4)), [0.22, 0.15, 0.14]); draw(SPH, X(T(dx, 3.8 + d, dz), S(0.6, 0.4 + Math.sin(tick * 0.08 + d) * 0.2, 0.6)), [1, 0.5, 0.08], 0, 1); }
+        if (j === 2) draw(TOR, X(T(dx, 6 + Math.sin(tick * 0.03 + d) * 1.2, dz), RX(1.2), RY(tick * 0.01 + d), S(1.5, 1.5, 0.4)), [0.8, 0.6, 1], 0, 0.5);
+      }
+    });
+    for (var i = 0; i < 6; i++) {
+      var A = HUBN[i], B = HUBN[i + 1], open = hubOpen(i + 1);
+      for (var k2 = 0; k2 < 12; k2++) { var t = (k2 + 0.5) / 12; draw(CUBE, X(T(A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t - 0.15, A.z + (B.z - A.z) * t), RY(Math.atan2(B.x - A.x, B.z - A.z)), S(0.9, 0.25, 0.9)), open ? [1, 0.85, 0.3] : [0.35, 0.35, 0.42], 0, open ? 0.35 : 0); }
+    }
+    HUBN.forEach(function (nd, i) {
+      var open = hubOpen(i), bs = i % 2 === 1, here = i === hub.at && hub.t >= 1;
+      draw(SPH, X(T(nd.x, nd.y - 0.35, nd.z), S(2.4, 0.5, 2.4)), open ? (i === 6 ? [0.7, 0.35, 1] : bs ? [1, 0.4, 0.3] : [0.3, 0.95, 0.6]) : [0.28, 0.28, 0.34], 0, open ? 0.35 : 0);
+      if (open) draw(TOR, X(T(nd.x, nd.y + 2.6 + Math.sin(tick * 0.05 + i) * 0.3, nd.z), RY(tick * 0.03 + i), S(here ? 1.1 : 0.8)), i < maxZone ? [1, 0.85, 0.2] : [1, 1, 1], 0, 0.6);
+      if (bs || i === 6) { draw(CUBE, X(T(nd.x + 1.6, nd.y + 1.3, nd.z), S(0.15, 2.6, 0.15)), [0.6, 0.6, 0.65]); draw(CUBE, X(T(nd.x + 2.05, nd.y + 2.3, nd.z), RY(Math.sin(tick * 0.08 + i) * 0.3), S(0.8, 0.5, 0.06)), i === 6 ? [0.8, 0.3, 1] : [1, 0.25, 0.2], 0, 0.4); }
+    });
+    var hp = hubPos(); drawChar(ch, hp.x, hp.y, hp.z, hp.h, { run: hub.t < 1 ? tick * 0.3 : 0, glide: false });
+  }
+  function cAt(f) {
+    var i = Math.max(0, Math.min(C.length - 2, Math.floor(f))), u = f - Math.floor(f), a = C[i], b = C[i + 1];
+    if (Math.hypot(b.x - a.x, b.z - a.z) > 3) u = 0;
+    return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, z: a.z + (b.z - a.z) * u, h: a.h + angDiff(b.h, a.h) * u };
+  }
+  function render() {
+    if (W !== innerWidth || H !== innerHeight) fit();
+    gl.viewport(0, 0, W, H); gl.clearColor(FOG[0], FOG[1], FOG[2], 1);
+    if (state === "select") gl.clearColor(0.08, 0.04, 0.2, 1);
+    if (state === "hub") gl.clearColor(0.07, 0.09, 0.25, 1);
+    spMode = !!(SP && (state === "special" || state === "spresult")); fbMode = !!(FB && (state === "final" || state === "trueend" || state === "over"));
+    if (spMode) gl.clearColor(SP.D.sky[0], SP.D.sky[1], SP.D.sky[2], 1);
+    if (fbMode) gl.clearColor(0.08, 0.04, 0.18, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+    var eye, tgt, up = [0, 1, 0];
+    var shx = shake ? (Math.random() - 0.5) * shake * 0.04 : 0;
+    if (spMode) { eye = [SP.x * 0.5 + shx, -SP.d + 9, SP.z * 0.5 - 5]; tgt = [SP.x * 0.8, -SP.d - 8, SP.z * 0.8]; up = [0, 0, 1]; }
+    else if (fbMode) { eye = [FB.x * 0.6 + shx, FB.y * 0.6 + 2.5, FB.z - 8]; tgt = [FB.x * 0.8, FB.y * 0.8 + 1, FB.z + 12]; }
+    else if (state === "select") { eye = [2.6, 202.2, -8.6]; tgt = [1.9, 200.7, 0]; }
+    else if (state === "hub") { var hq = hubPos(); eye = [hq.x - 3, hq.y + 13, hq.z - 15]; tgt = [hq.x, hq.y, hq.z + 2]; }
+    else if (state === "title" || state === "controls") {
+      if (C.length > 60) { var tf = (tick * 0.45) % (C.length - 40), c0 = cAt(tf), c1 = cAt(tf + 14); eye = [c0.x - Math.cos(c0.h) * 4, c0.y + 4.2, c0.z + Math.sin(c0.h) * 4]; tgt = [c1.x, c1.y + 1, c1.z]; }
+      else { var a = tick * 0.004; eye = [Math.sin(a) * 26, 9, 26 + Math.cos(a) * 26]; tgt = [0, 0, 26]; }
+    }
+    else { var sx = shake ? (Math.random() - 0.5) * shake * 0.04 : 0; eye = [cam.x + sx, cam.y + sx, cam.z]; tgt = [p.x, cam.ty + 1.4, p.z]; }
+    gl.uniformMatrix4fv(U.uVP, false, new Float32Array(mul(persp(1.05, W / H, 0.1, 500), lookAt(eye, tgt, up))));
+    gl.uniform3fv(U.uCam, eye);
+    if (spMode) drawSpecial();
+    else if (fbMode) drawFinal();
+    else if (state === "select") drawSelect();
+    else if (state === "hub") drawHub();
+    else {
+      drawWorld();
+      if (state === "title" || state === "controls") { if (C.length > 60) { var cr = cAt((tick * 0.45) % (C.length - 40) + 9); drawChar(1, cr.x, cr.y, cr.z, cr.h, { run: tick * 0.35 }); } else drawChar(0, 0, 0, 6, Math.atan2(eye[0], eye[2] - 6), { run: 0 }); }
+      else drawPlayer();
+    }
+    drawUI();
+  }
+
+  // ---------------------------------------------------------------- 2D overlay
+  function txt(s, x, y, size, col, align) {
+    cx.font = "bold " + size + "px monospace"; cx.textAlign = align || "left";
+    cx.fillStyle = "rgba(0,0,0,0.75)"; cx.fillText(s, x + 1, y + 1); cx.fillStyle = col; cx.fillText(s, x, y);
+  }
+  function dim(a) { cx.fillStyle = "rgba(0,0,30," + a + ")"; cx.fillRect(0, 0, VW, 240); }
+  function shardRow(x, y, sz) {
+    for (var si = 0; si < 3; si++) { var sx = x + si * sz * 2.3; cx.fillStyle = shards & (1 << si) ? SHCOL[si] : "rgba(255,255,255,0.18)"; cx.beginPath(); cx.moveTo(sx, y - sz); cx.lineTo(sx + sz * 0.75, y); cx.lineTo(sx, y + sz); cx.lineTo(sx - sz * 0.75, y); cx.closePath(); cx.fill(); }
+  }
+  function panel(x, y, w, h, a) { cx.fillStyle = "rgba(10,8,36," + (a || 0.72) + ")"; cx.beginPath(); cx.moveTo(x + 8, y); cx.lineTo(x + w, y); cx.lineTo(x + w - 8, y + h); cx.lineTo(x, y + h); cx.closePath(); cx.fill(); }
+  function logo4(x, y) {
+    var t = titleT, i, word = "PANGOLIN RUSH", n = word.length;
+    for (i = 0; i < 16; i++) { var sy = y - 46 + ((i * 37) % 100), sl = 30 + (i * 23) % 70, sx = ((tick * (4 + i % 3) + i * 71) % (VW + 160)); cx.fillStyle = "rgba(255,255,255," + (0.12 + (i % 3) * 0.08) + ")"; cx.fillRect(VW + 40 - sx, sy, sl, 2); }
+    cx.font = "bold 28px monospace"; cx.textAlign = "center";
+    for (i = 0; i < n; i++) {
+      var lt = Math.max(0, Math.min(1, (t - i * 3) / 14)); if (lt <= 0 || word[i] === " ") continue;
+      var bounce = lt < 1 ? 0 : Math.sin(tick * 0.08 + i * 0.6) * 1.5, ly = y - (1 - lt) * 140 + bounce, lx = x + (i - (n - 1) / 2) * 18;
+      cx.lineWidth = 7; cx.strokeStyle = "#16083a"; cx.strokeText(word[i], lx, ly);
+      cx.fillStyle = "#ff7a1a"; cx.fillText(word[i], lx, ly); cx.fillStyle = "#ffe066"; cx.fillText(word[i], lx, ly - 2);
+    }
+    var z4 = Math.max(0, Math.min(1, (t - 42) / 24));
+    if (z4 > 0) {
+      var sc = z4 < 1 ? 3.2 - 2.2 * z4 : 1 + Math.sin(tick * 0.06) * 0.05;
+      cx.save(); cx.translate(x, y + 44); cx.rotate((1 - z4) * 4); cx.scale(sc, sc);
+      cx.fillStyle = "#16083a"; cx.beginPath(); cx.moveTo(0, -32); cx.lineTo(32, 0); cx.lineTo(0, 32); cx.lineTo(-32, 0); cx.closePath(); cx.fill();
+      cx.fillStyle = "hsl(" + (190 + Math.sin(tick * 0.03) * 30) + ",90%,60%)"; cx.beginPath(); cx.moveTo(0, -27); cx.lineTo(27, 0); cx.lineTo(0, 27); cx.lineTo(-27, 0); cx.closePath(); cx.fill();
+      cx.font = "bold 40px monospace"; cx.textAlign = "center";
+      for (var d = 4; d > 0; d--) { cx.fillStyle = "#7a1a00"; cx.fillText("4", d, 14 + d); }
+      cx.fillStyle = "#ffd23f"; cx.fillText("4", 0, 14); cx.restore();
+    }
+    for (i = 0; i < 3; i++) { var ca = tick * 0.03 + i * 2.1; cx.fillStyle = ["#7ad8ff", "#ff9a40", "#c080ff"][i]; cx.fillRect(x + Math.cos(ca) * 150 - 2, y + 30 + Math.sin(ca) * 22 - 2, 4, 4); }
+  }
+  function fmtTime(t) { var s = Math.floor(t / 60); return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2); }
+  function drawUI() {
+    cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, W, H); cx.setTransform(k, 0, 0, k, 0, 0);
+    var mx = VW / 2, blink = (tick >> 5) & 1;
+    if (state === "title") {
+      logo4(mx, 64);
+      if (titleT > 75) { txt("FROST  \u2022  FIRE  \u2022  STARLIGHT", mx, 168, 9, "#ffffff", "center"); if (blink) txt("PRESS ENTER", mx, 196, 14, "#ffd23f", "center"); }
+      txt("Click the game first if keys don't work", mx, 222, 7, "#d8e8ff", "center");
+      txt("\u00a9 2026 PANGOLIN RUSH TEAM", mx, 234, 7, "#ffffff", "center");
+      if (cheatMsg3) txt("ALL ZONES OPEN!", mx, 40, 10, "hsl(" + (tick * 6 % 360) + ",100%,70%)", "center");
+      if (cheatMsg2) txt("ALL 3 ULTRA SHARDS!", mx, 26, 10, "hsl(" + (tick * 6 % 360) + ",100%,70%)", "center");
+      if (cheatMsg) txt("NOVA UNLOCKED!", mx, 12, 10, "hsl(" + (tick * 6 % 360) + ",100%,70%)", "center");
+      return;
+    }
+    if (state === "controls") {
+      dim(0.6);
+      txt("HOW TO PLAY", mx, 26, 18, "#ffd23f", "center");
+      [["UP / DOWN or W / S", "run forward / back"], ["LEFT / RIGHT", "steer your runner (camera follows)"], ["A / D", "sidestep"], ["SPACE", "jump (hold for higher)"], ["SHIFT / CTRL", "roll while running (rolls build speed downhill)"],
+        ["X / K", "ability (Kai: Tongue Zip, Spikes: Quills, Nova: Boost)"], ["Q / E or MOUSE DRAG", "look around"], ["P / ESC", "pause      M  mute"]].forEach(function (l, i) {
+        txt(l[0], mx - 8, 48 + i * 12, 9, "#9ee0ff", "right"); txt(l[1], mx + 8, 48 + i * 12, 9, "#ffffff");
+      });
+      txt("Grab spark rings. Get hit and you drop them.", mx, 146, 9, "#ffd23f", "center");
+      txt("Hit with zero sparks and you lose a life.", mx, 158, 9, "#ffd23f", "center");
+      txt("Hit LOOPS at full speed, grind gold RAILS, and pick the HIGH or LOW road at every split!", mx, 170, 8, "#ffffff", "center");
+      txt("Reach the goal sign, then beat the boss of each world. Watch for spikes!", mx, 182, 8, "#ffffff", "center");
+      txt("Sky Dive Special Stages: finish a zone with 40+ sparks, or find the hidden giant ring.", mx, 194, 7, "#9ee0ff", "center");
+      txt("V: ULTRA form (all 3 shards, 50 sparks)", mx, 206, 7, "#9ee0ff", "center");
+      txt("ENTER  next      ESC  back", mx, 224, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+      return;
+    }
+    if (state === "select") {
+      txt("CHOOSE YOUR RUNNER", 10, 22, 14, "#ffd23f");
+      var C2 = CH[sel], lockd = sel === 5 && !unlocked, px0 = VW - 176;
+      panel(px0, 34, 170, 172);
+      cx.fillStyle = "#ffd23f"; cx.fillRect(px0 + 6, 34, 160, 3);
+      txt(lockd ? "? ? ?" : C2.n, px0 + 14, 58, 18, lockd ? "#888" : "#ffd23f");
+      [["SPEED", C2.top / 0.4725], ["ACCEL", C2.acc / 0.0112], ["JUMP", C2.jump / 0.445]].forEach(function (r, i) {
+        txt(r[0], px0 + 14, 78 + i * 13, 8, "#d8e8ff");
+        cx.fillStyle = "rgba(255,255,255,0.15)"; cx.fillRect(px0 + 56, 72 + i * 13, 96, 6);
+        cx.fillStyle = lockd ? "#555" : ["#40e0ff", "#80ff80", "#ffb040"][i]; cx.fillRect(px0 + 56, 72 + i * 13, 96 * Math.max(0.15, (r[1] - 0.8) / 0.2), 6);
+      });
+      (lockd ? ["Beat the Frost Titan", "with anyone to unlock."] : C2.ab).forEach(function (l, i) { txt(l, px0 + 14, 128 + i * 12, 7, "#ffffff"); });
+      txt("ULTRA SHARDS", px0 + 14, 182, 8, "#d8e8ff"); shardRow(px0 + 100, 179, 5);
+      if (lockMsg) txt("LOCKED!", mx, 80, 12, "#ff5050", "center");
+      txt("\u2190 \u2192  choose    ENTER  world map    ESC  back", mx, 232, 8, blink ? "#9ee0ff" : "#ffffff", "center");
+      return;
+    }
+    if (state === "hub") {
+      var nd = hub.t < 1 ? hub.to : hub.at, NM = nd === 6 ? "ECLIPSE SERPENT" : ZONES[nd].n, KIND = nd === 6 ? "SECRET FINAL BOSS" : ZONES[nd].boss ? "BOSS" : "ZONE " + (nd / 2 + 1);
+      cx.fillStyle = "rgba(10,8,36,0.75)"; cx.fillRect(0, 0, VW, 28); cx.fillStyle = "#ffd23f"; cx.fillRect(0, 28, VW, 2);
+      txt("WORLD MAP", 10, 19, 13, "#ffd23f"); txt(CH[ch].n + (hub.keep ? "  x " + lives + "   SCORE " + score : ""), 112, 18, 9, "#ffffff");
+      shardRow(VW - 52, 14, 6);
+      panel(mx - 120, 176, 240, 44);
+      txt(KIND, mx, 191, 9, nd === 6 ? "#e080ff" : ZONES[nd].boss ? "#ff8070" : "#80ffb0", "center");
+      txt(NM, mx, 210, 15, "#ffd23f", "center");
+      if (nd < maxZone && nd < 6) txt("CLEARED \u2713", mx + 112, 191, 8, "#80ff80", "right");
+      if (hub.msg) txt(hub.at + 1 === 6 || (hub.at === 5) ? "ECLIPSE: GET ALL 3 SHARDS AND BEAT THE NEBULA KING" : "LOCKED! CLEAR THE STAGE BEFORE IT", mx, 160, 8, "#ff7070", "center");
+      txt("\u2190 \u2192  travel    ENTER  play    ESC  runners", mx, 234, 8, blink ? "#9ee0ff" : "#ffffff", "center");
+      return;
+    }
+    if (spMode && state === "special") {
+      var s = SP, D = SPS[s.i];
+      txt("HOOPS", mx - 64, 18, 10, "#ffd23f"); txt(s.orbs + " / " + s.need, mx - 20, 18, 12, s.orbs >= s.need ? "#80ff80" : "#ffffff");
+      cx.fillStyle = "rgba(0,0,0,0.5)"; cx.fillRect(mx - 60, 26, 120, 5); cx.fillStyle = SHCOL[s.i]; cx.fillRect(mx - 60, 26, 120 * Math.min(1, s.d / D.len), 5);
+      txt("ALTITUDE " + Math.max(0, Math.round((D.len - s.d) * 3)) + " m", VW - 8, 18, 8, "#ffffff", "right");
+      if (zoneCard) { txt("SKY DIVE " + (s.i + 1), mx, 96, 16, "#ffd23f", "center"); txt("Fall through " + s.need + " hoops before you land. Dodge the spike mines!", mx, 116, 9, "#ffffff", "center"); txt("ARROWS / WASD  steer in all four directions", mx, 130, 8, "#9ee0ff", "center"); }
+      if (s.done) txt(s.win ? "PERFECT LANDING!" : "NOT ENOUGH HOOPS...", mx, 110, 18, s.win ? "#80ff80" : "#ff6060", "center");
+      if (paused) { dim(0.5); txt("PAUSED", mx, 115, 20, "#ffd23f", "center"); }
+      return;
+    }
+    if (state === "spresult") {
+      dim(0.55); var won = shards & (1 << SP.i);
+      txt(won ? "ULTRA SHARD " + (SP.i + 1) + " GET!" : "NO SHARD THIS TIME", mx, 80, 18, won ? SHCOL[SP.i] : "#ff7070", "center");
+      for (var si = 0; si < 3; si++) { cx.fillStyle = shards & (1 << si) ? SHCOL[si] : "#333"; cx.beginPath(); cx.moveTo(mx - 30 + si * 30, 100); cx.lineTo(mx - 22 + si * 30, 112); cx.lineTo(mx - 30 + si * 30, 124); cx.lineTo(mx - 38 + si * 30, 112); cx.fill(); }
+      txt(shards === ALLSH ? "ALL 3 SHARDS! PRESS V WITH 50 SPARKS TO GO ULTRA" : "ULTRA SHARDS " + shardCount() + "/3", mx, 146, 9, "#ffffff", "center");
+      txt("PRESS ENTER", mx, 210, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+      return;
+    }
+    if (fbMode) {
+      var f = FB;
+      txt("SPARKS", 8, 16, 10, f.sparks < 10 && blink ? "#ff3030" : "#ffd23f"); txt(String(f.sparks), 58, 16, 10, "#ffffff");
+      txt("SCORE", 8, 30, 10, "#ffd23f"); txt(String(score), 58, 30, 10, "#ffffff");
+      txt("ULTRA " + CH[ch].n + "  x " + Math.max(0, lives), 8, 232, 10, "#ffd23f");
+      txt("ECLIPSE SERPENT", mx, 14, 9, "#e080ff", "center");
+      for (var hi = 0; hi < 8; hi++) { cx.fillStyle = hi < f.hp ? "#c040ff" : "#302040"; cx.fillRect(mx - 52 + hi * 13, 19, 11, 6); }
+      if (zoneCard) { txt("SECRET FINAL BOSS", mx, 96, 16, "#ffd23f", "center"); txt("WASD / ARROWS fly     SPACE or X  dash into its head", mx, 116, 9, "#ffffff", "center"); txt("Sparks drain while Ultra. Grab rings to keep flying!", mx, 130, 8, "#9ee0ff", "center"); }
+      if (f.down) txt("OUT OF POWER...", mx, 110, 16, "#ff6060", "center");
+      popups.forEach(function (u, i) { txt(u.s, mx, 70 + i * 14 - (90 - u.t) * 0.15, 11, (u.t >> 2) & 1 ? "#ffd23f" : "#ffffff", "center"); });
+      for (var pi = popups.length - 1; pi >= 0; pi--) if (state === "final" && !paused && --popups[pi].t <= 0) popups.splice(pi, 1);
+      if (state === "trueend") {
+        dim(0.6);
+        txt("THE ECLIPSE SERPENT FALLS!", mx, 70, 18, "hsl(" + (tick * 4 % 360) + ",100%,65%)", "center");
+        txt("ULTRA " + CH[ch].n + " BROUGHT THE STARS BACK", mx, 98, 11, "#ffffff", "center");
+        txt("TRUE ENDING", mx, 122, 14, "#ffd23f", "center");
+        txt("FINAL SCORE " + score, mx, 146, 12, "#ffffff", "center");
+        txt("PRESS ENTER", mx, 210, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+      }
+      if (state === "over") { dim(0.6); txt("GAME OVER", mx, 110, 22, "#ff5050", "center"); txt("SCORE " + score + "    PRESS ENTER", mx, 136, 10, "#ffffff", "center"); }
+      if (paused) { dim(0.5); txt("PAUSED", mx, 115, 20, "#ffd23f", "center"); }
+      return;
+    }
+    // HUD (PR4)
+    var spk = p.sparks, warn = spk === 0 && blink;
+    panel(2, 4, 118, 36);
+    cx.strokeStyle = warn ? "#ff3030" : "#ffd23f"; cx.lineWidth = 3; cx.beginPath(); cx.arc(22, 22, 8, 0, 7); cx.stroke();
+    cx.strokeStyle = "rgba(255,255,255,0.6)"; cx.lineWidth = 1; cx.beginPath(); cx.arc(22, 22, 5, 3.6, 5.2); cx.stroke();
+    txt(String(spk), 38, 30, 18, warn ? "#ff5050" : "#ffffff");
+    txt("SCORE " + score, 8, 52, 8, "#d8e8ff"); txt("TIME  " + fmtTime(time), 8, 62, 8, "#d8e8ff");
+    var gx = 34, gy = 204, gr = 24, spf = Math.min(1, p.s / 0.9);
+    cx.fillStyle = "rgba(10,8,36,0.7)"; cx.beginPath(); cx.arc(gx, gy, gr + 6, 0, 7); cx.fill();
+    for (var gi = 0; gi < 16; gi++) { var ga = Math.PI * 0.75 + gi / 15 * Math.PI * 1.5; cx.strokeStyle = gi / 15 <= spf ? (gi > 12 ? "#ff5a3a" : gi > 7 ? "#ffd23f" : "#40e0ff") : "rgba(255,255,255,0.15)"; cx.lineWidth = 4; cx.beginPath(); cx.arc(gx, gy, gr, ga, ga + 0.13); cx.stroke(); }
+    var na = Math.PI * 0.75 + spf * Math.PI * 1.5; cx.strokeStyle = "#ffffff"; cx.lineWidth = 2; cx.beginPath(); cx.moveTo(gx, gy); cx.lineTo(gx + Math.cos(na) * (gr - 7), gy + Math.sin(na) * (gr - 7)); cx.stroke();
+    txt(String(Math.round(p.s * 220)), gx, gy + 15, 8, "#ffffff", "center");
+    txt(CH[ch].n, gx + 34, gy + 2, 10, "#ffd23f"); txt("x " + Math.max(0, lives), gx + 34, gy + 14, 10, "#ffffff");
+    if (!Z.boss) txt("ZONE " + (zi / 2 + 1), gx + 34, gy - 12, 8, "#d8e8ff");
+    shardRow(VW - 52, 12, 5);
+    var py = 32;
+    if (p.loopR) { txt("LOOP!", mx, 52, 14, "hsl(" + (tick * 8 % 360) + ",100%,65%)", "center"); }
+    if (p.grind) { txt("RAIL GRIND!", mx, 52, 12, "#ffd23f", "center"); }
+    if (p.ground && p.box && p.box.lane) { txt(p.box.lane, VW - 8, py, 9, p.box.lane === "HIGH ROAD" ? "#ffb030" : "#50e0ff", "right"); py += 12; }
+    if (p.ultra) { txt("ULTRA!", VW - 8, py, 10, "hsl(" + (tick * 8 % 360) + ",100%,65%)", "right"); py += 12; }
+    else if (shards === ALLSH && p.sparks >= 50 && state === "play") { txt("V: GO ULTRA", VW - 8, py, 9, blink ? "#ffd23f" : "#ffffff", "right"); py += 12; }
+    if (boss) {
+      txt(Z.n, mx, 14, 9, "#ffd23f", "center");
+      for (var bi = 0; bi < boss.max; bi++) { cx.fillStyle = bi < boss.hp ? "#ff5030" : "#402020"; cx.fillRect(mx - boss.max * 6.5 + bi * 13, 19, 11, 6); }
+      if (boss.vul && !boss.dead && (tick >> 4) & 1) txt("HIT IT NOW!", mx, 40, 10, "#ff8080", "center");
+    }
+    if (Z.chase && state === "play") {
+      var gapL = Math.max(0, Math.round(prog - chaseD));
+      txt("LAVA", VW - 8, 206, 9, gapL < 25 && blink ? "#ff3030" : "#ff9a40", "right");
+      cx.fillStyle = "rgba(0,0,0,0.6)"; cx.fillRect(VW - 88, 210, 80, 6); cx.fillStyle = gapL < 25 ? "#ff3020" : "#ff9a40"; cx.fillRect(VW - 87, 211, 78 * Math.max(0, 1 - gapL / 75), 4);
+    }
+    if (p.shield) { txt("SHIELD", VW - 8, py, 9, "#7ac0ff", "right"); py += 12; }
+    if (p.shoes) { txt("SHOES " + Math.ceil(p.shoes / 60), VW - 8, py, 9, "#ff8080", "right"); py += 12; }
+    if (p.star) { txt("INVINCIBLE " + Math.ceil(p.star / 60), VW - 8, py, 9, "#ffffaa", "right"); py += 12; }
+    if (ch === 5 || ch === 6) {
+      var hx = VW - 88, hy = 222;
+      txt(p.lock ? "OVERHEAT" : "HEAT", hx, hy - 4, 8, p.lock && blink ? "#ff3030" : "#ffffff");
+      cx.fillStyle = "rgba(0,0,0,0.6)"; cx.fillRect(hx, hy, 80, 7);
+      cx.fillStyle = p.lock ? (blink ? "#ff2020" : "#801010") : p.heat > 0.7 ? "#ff8a20" : "#40d0ff"; cx.fillRect(hx + 1, hy + 1, 78 * p.heat, 5);
+    }
+    if (ch === 2) {
+      txt("QUILLS", VW - 88, 218, 8, p.qcd ? "#aaaaaa" : "#ffffff");
+      cx.fillStyle = "rgba(0,0,0,0.6)"; cx.fillRect(VW - 88, 222, 80, 7); cx.fillStyle = p.qcd ? "#a08060" : "#f0e0b0"; cx.fillRect(VW - 87, 223, 78 * (1 - p.qcd / 90), 5);
+    }
+    if (zoneCard && state === "play") {
+      var zc = Math.min(1, zoneCard / 30), zx = mx + (1 - Math.min(1, (150 - zoneCard) / 20)) * VW;
+      cx.globalAlpha = zc; cx.fillStyle = "#e23b3b"; cx.fillRect(zx - 110, 92, 220, 46); cx.fillStyle = "#ffd23f"; cx.fillRect(zx - 110, 92, 220, 4);
+      txt(Z.boss ? "BOSS" : "ZONE " + (zi / 2 + 1), zx, 108, 11, "#ffffff", "center"); txt(ZONES[zi].n, zx, 129, 16, "#ffd23f", "center"); cx.globalAlpha = 1;
+    }
+    popups.forEach(function (u, i) { txt(u.s, mx, 70 + i * 14 - (90 - u.t) * 0.15, 11, (u.t >> 2) & 1 ? "#ffd23f" : "#ffffff", "center"); });
+    if (state === "results") {
+      dim(0.5);
+      var rs = Math.min(1, (tick - (res.t0 || 0)) / 25), rx = mx - 130 + (1 - rs) * 300;
+      panel(rx, 30, 260, 140, 0.8); cx.fillStyle = "#ffd23f"; cx.fillRect(rx + 8, 30, 252, 3);
+      txt(CH[ch].n + " GOT THROUGH", rx + 18, 50, 11, "#ffffff"); txt(ZONES[zi].n, rx + 18, 70, 16, "#ffd23f");
+      [["TIME", fmtTime(res.secs * 60)], ["TIME BONUS", res.tb], ["SPARK BONUS", res.sb], ["LOOPS RIDDEN", p.loops], ["ROUTE", p.hiT > p.loT ? "HIGH ROAD" : p.loT > 0 ? "LOW ROAD" : "-"]].forEach(function (r, i) {
+        txt(r[0], rx + 18, 90 + i * 12, 9, "#d8e8ff"); txt(String(r[1]), rx + 232, 90 + i * 12, 9, "#ffffff", "right");
+      });
+      txt("SCORE " + score, mx, 162, 13, "#ffd23f", "center");
+      txt(spGo ? "40+ SPARKS! SKY DIVE UNLOCKED" : shards & (1 << Z.sp) ? "ULTRA SHARD ALREADY FOUND HERE" : "Finish with 40+ sparks for a Special Stage", mx, 186, 9, spGo ? "#80ff80" : "#d8e8ff", "center");
+      txt(spGo ? "PRESS ENTER: SKY DIVE!" : "PRESS ENTER: BACK TO THE WORLD MAP", mx, 210, 9, blink ? "#9ee0ff" : "#ffffff", "center");
+    }
+    if (state === "bossclear") {
+      dim(0.55);
+      txt(Z.n + " DEFEATED!", mx, 70, 18, "hsl(" + (tick * 4 % 360) + ",100%,65%)", "center");
+      txt("SCORE " + score, mx, 100, 12, "#ffffff", "center");
+      if (newUnlock) txt("NOVA UNLOCKED!", mx, 130, 14, "hsl(" + (tick * 6 % 360) + ",100%,65%)", "center");
+      txt("PRESS ENTER: BACK TO THE WORLD MAP", mx, 210, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+    }
+    if (state === "ending") {
+      dim(0.65);
+      txt("NEBULA KING DEFEATED!", mx, 80, 20, "hsl(" + (tick * 4 % 360) + ",100%,65%)", "center");
+      txt(CH[ch].n + " CONQUERED FROST, FIRE AND STARLIGHT", mx, 108, 11, "#ffffff", "center");
+      txt("FINAL SCORE " + score, mx, 134, 14, "#ffd23f", "center");
+      txt("ULTRA SHARDS " + shardCount() + "/3", mx, 160, 10, "#ffd23f", "center");
+      txt("Collect all 3 Ultra Shards to face the secret final boss...", mx, 176, 8, "#9ee0ff", "center");
+      txt("PRESS ENTER", mx, 210, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+    }
+    if (state === "secret") {
+      dim(0.6);
+      txt("THE 3 ULTRA SHARDS ARE GLOWING...", mx, 70, 13, "hsl(" + (tick * 6 % 360) + ",100%,70%)", "center");
+      txt("The Nebula King's crown cracks open... an ECLIPSE SERPENT swallows the sun!", mx, 96, 8, "#ffffff", "center");
+      txt(CH[ch].n + " GOES ULTRA TO CHASE IT", mx, 120, 12, "#ffd23f", "center");
+      txt("PRESS ENTER", mx, 210, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+    }
+    if (state === "over") { dim(0.6); txt("GAME OVER", mx, 110, 22, "#ff5050", "center"); txt("SCORE " + score + "    PRESS ENTER", mx, 136, 10, "#ffffff", "center"); }
+    if (paused) { dim(0.5); txt("PAUSED", mx, 115, 20, "#ffd23f", "center"); txt("P TO RESUME", mx, 136, 10, "#ffffff", "center"); }
+    if (muted) txt("MUTED", VW - 8, 206, 8, "#aaaaaa", "right");
+  }
+
+  // ---------------------------------------------------------------- main loop (fixed 60 fps steps)
+  buildLevel(); p = newPlayer({ x: 0, y: 0, z: 3, h: 0 });
+  var last = 0, acc = 0, STEP = 1000 / 60;
+  function loop(now) {
+    if (!last) last = now;
+    acc += Math.min(100, now - last); last = now;
+    while (acc >= STEP) { update(); pressed = {}; acc -= STEP; }
+    render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
