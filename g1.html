@@ -1735,7 +1735,13 @@
     R.hearts.forEach(function (h) { heart(h.x - camX, h.y, 3, Math.min(1, h.t / 30)); });
     var r = rival, rx = Math.round(r.x - camX);
     if (rx > -20 && rx < W + 20) {
-      if (!r.ground) protoBall(rx, r.y - 8, r.ang);
+      // racing AS Proto Pip: the real Pip is the rival instead
+      if (ch === 4) {
+        if (!r.ground) { circ(BALL[0], rx, r.y - 8, 8); ctx.strokeStyle = BALL2[0]; ctx.lineWidth = 1.5;
+          for (var ri = 0; ri < 3; ri++) { var ra = r.ang + ri * 2.09; ctx.beginPath(); ctx.arc(rx, r.y - 8, 5.5, ra, ra + 1.2); ctx.stroke(); }
+          circ("#f3e3b5", rx + Math.cos(r.ang) * 3, r.y - 8 + Math.sin(r.ang) * 3, 2); }
+        else pipFig(rx, r.y, 1, R.cd || R.res ? 0 : Math.sin(tick * 0.4 + 1) * 2);
+      } else if (!r.ground) protoBall(rx, r.y - 8, r.ang);
       else protoFig(rx, r.y, 1, R.cd || R.res ? 0 : Math.sin(tick * 0.4 + 1) * 2);
     }
   }
@@ -1778,14 +1784,15 @@
       rect("rgba(0,0,0,0.5)", bx - 1, by - 1, bw + 2, 6); rect("#c8743a", bx, by, bw, 4);
       rect("#ffffff", bx + bw - 1, by - 3, 2, 10);
       var rf = Math.min(1, rival.x / goal.x), pf = Math.min(1, p.x / goal.x);
-      circ("#b9c0c8", bx + rf * bw, by + 2, 3.5); circ("#ff2b2b", bx + rf * bw, by + 2, 1.2);
+      var rc = ch === 4 ? 0 : 4;
+      circ(ICON[rc], bx + rf * bw, by + 2, 3.5); circ(ch === 4 ? ICON2[0] : "#ff2b2b", bx + rf * bw, by + 2, 1.2);
       circ(ICON[ch], bx + pf * bw, by + 2, 3.5); circ(ICON2[ch], bx + pf * bw + 1, by + 2.5, 1.2);
       var first = race.res ? race.res === 1 : p.x >= rival.x;
       text(first ? "1ST" : "2ND", bx + bw + 8, by + 6, 9, first ? "#ffd23f" : "#e23b3b");
       if (race.cd) text(String(Math.ceil(race.cd / 60)), W / 2, 160, 28, "#ffd23f", "center");
       else if (race.go) text("GO!", W / 2, 160, 28, "#9ee0ff", "center");
       if (race.res === 1) text("YOU SAVED SUZIE!", W / 2, 150, 16, "#ff8fc4", "center");
-      if (race.res === 2) text("PROTO PIP WINS!", W / 2, 150, 16, "#e23b3b", "center");
+      if (race.res === 2) text(ch === 4 ? "PIP WINS!" : "PROTO PIP WINS!", W / 2, 150, 16, "#e23b3b", "center");
     }
     // gravity arrow
     text("GRAV", W - 44, 14, 9, "#ffd23f");
@@ -2121,7 +2128,7 @@
         for (i = 0; i < 3; i++) { var a = S.t * 0.4 + i * 2.09; ctx.beginPath(); ctx.arc(0, -8, 5.5, a, a + 1.2); ctx.stroke(); }
       } else {
         var run = Math.sin(S.t * 0.5) * 2;
-        if (ch === 1) junoFig(0, 0, 1, run, false); else if (ch === 2) spikesFig(0, 0, 1, run, false); else pipFig(0, 0, 1, run);
+        figOf(ch, 0, 0, 1, run, false);
       }
       ctx.restore();
     }
