@@ -27,7 +27,8 @@
   cv.focus(); addEventListener("pointerdown", function () { cv.focus(); });
 
   // ---------- input ----------
-  var keys = {}, pressed = {}, cheatBuf = "";
+  var keys = {}, pressed = {}, cheatBuf = "", dbgBuf = "", dbgOK = false, dbgFx = 0, dk = {}, dp = {};
+  var dbg = { on: false, i: 0, x: 0, y: 0, v: 0 };
   var MAP = { ArrowLeft: "l", KeyA: "l", ArrowRight: "r", KeyD: "r", ArrowDown: "d", KeyS: "d",
     ArrowUp: "j", KeyW: "j", Space: "j", KeyZ: "j", Enter: "e", KeyX: "x", KeyK: "x", KeyM: "m", KeyP: "p", Escape: "p",
     KeyC: "c", ShiftLeft: "c", ShiftRight: "c" };
@@ -37,11 +38,17 @@
     if (state === "title" && /^Key[A-Z]$/.test(e.code) && !e.repeat) {
       cheatBuf = (cheatBuf + e.code.charAt(3)).slice(-5);
       if (cheatBuf === "PRISM") { cheat = true; shards = 7; cheatBuf = ""; e.preventDefault(); return; }
+      // super extra secret: type DEBUGRUSH on the title screen to unlock DEBUG MODE
+      dbgBuf = (dbgBuf + e.code.charAt(3)).slice(-9);
+      if (dbgBuf === "DEBUGRUSH") { dbgOK = true; dbgBuf = ""; dbgFx = 90; e.preventDefault(); return; }
     }
+    // DEBUG MODE keys: Q toggles in a level; while on, raw keys drive the cursor
+    if (dbgOK && state === "play" && !paused && e.code === "KeyQ" && !e.repeat) { dbgToggle(); e.preventDefault(); return; }
+    if (dbg.on) { if (!dk[e.code]) dp[e.code] = true; dk[e.code] = true; if (MAP[e.code] !== "p" && MAP[e.code] !== "m") { e.preventDefault(); return; } }
     var k = MAP[e.code]; if (!k) return;
     e.preventDefault(); if (!keys[k]) pressed[k] = true; keys[k] = true;
   });
-  addEventListener("keyup", function (e) { var k = MAP[e.code]; if (k) { keys[k] = false; e.preventDefault(); } });
+  addEventListener("keyup", function (e) { dk[e.code] = false; var k = MAP[e.code]; if (k) { keys[k] = false; e.preventDefault(); } });
   addEventListener("pointerdown", function () { Music.unlock(); });
   document.addEventListener("visibilitychange", function () { Music.pause(); });
 
@@ -423,7 +430,7 @@
       shield: false, shoes: 0, star: 0, dash: 0, dashUsed: false, prism: false, drain: 0, heat: 0, lock: 0, boost: false, zip: null, zcd: 0, hopUsed: false };
   }
   function startZone(n) {
-    zone = n; buildLevel(); frames = 0; p = newPlayer(); p.sparks = 0; camX = 0; banner = 150;
+    dbg.on = false; zone = n; buildLevel(); frames = 0; p = newPlayer(); p.sparks = 0; camX = 0; banner = 150;
     shiftFx = 0; flipCD = 0; popups = []; shake = 0; rings = []; dust = [];
   }
   function resetGame() { score = 0; lives = 3; shards = cheat ? 7 : 0; startZone(0); }
@@ -431,6 +438,73 @@
     if (zone < LEVELS.length - 1) { startZone(zone + 1); state = "play"; } else { state = "win"; try { if (window.PRC && PRC.report) PRC.report(shards >= 7 ? "true" : "win"); } catch (e) {} }
   }
   resetGame();
+
+  // ---------- DEBUG MODE (secret): fly around and place objects ----------
+  var DBG = [
+    { n: "SPARK", f: function (x, y) { sparks.push({ x: x, y: y, got: false }); } },
+    { n: "SPARK ROW", f: function (x, y) { for (var i = 0; i < 5; i++) sparks.push({ x: x + i * 16, y: y, got: false }); } },
+    { n: "SPRING", g: 1, f: function (x) { springs.push({ x: x, t: 0 }); } },
+    { n: "SPIKES", g: 1, f: function (x) { spikes.push({ x: x - 12, w: 24 }); } },
+    { n: "BOX: +10 SPARKS", g: 1, b: "s" }, { n: "BOX: SHIELD", g: 1, b: "h" }, { n: "BOX: SPEED SHOES", g: 1, b: "f" },
+    { n: "BOX: INVINCIBLE", g: 1, b: "i" }, { n: "BOX: 1-UP", g: 1, b: "u" },
+    { n: "BEETLE BOT", g: 1, f: function (x) { enemies.push({ x: x, a: x - 48, b: x + 48, d: -1, alive: true, pop: 0, c: false }); } },
+    { n: "WASPER", f: function (x, y) { waspers.push({ x: x, y0: y, y: y, alive: true, pop: 0 }); } },
+    { n: "GRAVITY ORB", f: function (x, y) { orbs.push({ x: x, y: y, k: y < H / 2 ? -1 : 1 }); } },
+    { n: "PRISM GATE (BONUS STAGE)", f: function (x, y) { skygate = { x: x, y: y, used: false }; } }
+  ];
+  function dbgToggle() {
+    if (deadT || race) return;
+    if (!dbg.on) { dbg.on = true; dbg.x = p.x; dbg.y = p.y - 10 * p.g; dbg.v = 0; dk = {}; dp = {}; keys = {}; return; }
+    dbg.on = false; keys = {}; pressed = {};
+    p.x = dbg.x; p.y = dbg.y; p.vx = 0; p.vy = 0; p.ground = false; p.plat = null; p.jumping = false; p.rolling = false;
+    p.dive = false; p.pound = false; p.inv = 60; p.best = Math.max(p.best || 0, p.x);
+  }
+  function dbgGround(x) { return hill(x); }
+  function dbgStep() {
+    var mx = (dk.ArrowRight || dk.KeyD ? 1 : 0) - (dk.ArrowLeft || dk.KeyA ? 1 : 0);
+    var my = (dk.ArrowDown || dk.KeyS ? 1 : 0) - (dk.ArrowUp || dk.KeyW ? 1 : 0);
+    dbg.v = (mx || my) ? Math.min(7, dbg.v + 0.15) : 0;
+    var sp = 1.5 + dbg.v;
+    dbg.x = Math.max(8, Math.min(L - 8, dbg.x + mx * sp));
+    dbg.y = Math.max(10, Math.min(H - 6, dbg.y + my * sp));
+    if (dp.KeyX) dbg.i = (dbg.i + 1) % DBG.length;
+    if (dp.KeyC || dp.ShiftLeft || dp.ShiftRight) dbg.i = (dbg.i + DBG.length - 1) % DBG.length;
+    if (dp.Space || dp.KeyZ || dp.Enter) dbgPlace();
+    dp = {};
+    camX = Math.max(0, Math.min(L - W, dbg.x - W / 2));
+    tick; mvT++;
+  }
+  function dbgPlace() {
+    var o = DBG[dbg.i], x = Math.round(dbg.x), y = Math.round(dbg.y);
+    if (o.b) boxes.push({ x: x, t: o.b, gone: false, pop: 0 });
+    else o.f(x, y);
+    rings.push({ x: x, y: o.g ? hill(x) : y, t: 14 });
+  }
+  function drawDebug() {
+    var o = DBG[dbg.i], x = Math.round(dbg.x), y = Math.round(dbg.y), sx = x - camX;
+    ctx.save(); ctx.globalAlpha = 0.55 + 0.25 * Math.sin(tick * 0.2);
+    if (o.b) drawBox({ x: x, t: o.b, gone: false, pop: 0 });
+    else if (o.n === "SPRING") drawSpring({ x: x, t: 0 });
+    else if (o.n === "SPIKES") drawSpikes({ x: x - 12, w: 24 });
+    else if (o.n === "BEETLE BOT") drawEnemy({ x: x, a: x, b: x, d: -1, alive: true, pop: 0, c: false });
+    else if (o.n === "WASPER") drawWasper({ x: x, y0: y, y: y, alive: true, pop: 0 });
+    else if (o.n === "GRAVITY ORB") drawOrb({ x: x, y: y, k: 1 });
+    else if (o.n === "PRISM GATE (BONUS STAGE)") drawPrismGate(sx, y, 16);
+    else if (o.n === "SPARK ROW") { for (var i = 0; i < 5; i++) star(sx + i * 16, y, 5, 1); }
+    else star(sx, y, 5, 1);
+    ctx.restore();
+    // crosshair + drop line to the ground for ground objects
+    var c = (tick >> 3) & 1 ? "#ffffff" : "#ff8cff";
+    rect(c, sx - 9, y, 6, 1); rect(c, sx + 4, y, 6, 1); rect(c, sx, y - 9, 1, 6); rect(c, sx, y + 4, 1, 6);
+    if (o.g) for (var gy = y + 6; gy < hill(x) - 2; gy += 4) rect("rgba(255,255,255,0.5)", sx, gy, 1, 2);
+    // panel
+    rect("rgba(10,8,36,0.75)", 0, H - 34, W, 34); rect("#ff8cff", 0, H - 34, W, 1);
+    text("DEBUG MODE", 6, H - 22, 10, hue(0, 72));
+    text("< " + o.n + " >", W / 2, H - 22, 10, "#ffd23f", "center");
+    text("X " + x + "  Y " + y, W - 6, H - 22, 8, "#9ee0ff", "right");
+    text("ARROWS FLY · X / C PICK · SPACE PLACE · Q PLAY HERE", W / 2, H - 8, 8, "#ffffff", "center");
+    if (o.n === "PRISM GATE (BONUS STAGE)" && shards >= 7) text("ALL 7 SHARDS: GATE STAYS HIDDEN", W / 2, H - 44, 8, "#ff8cff", "center");
+  }
 
   function hurt(fromX) {
     if (p.inv > 0 || deadT) return;
@@ -860,6 +934,7 @@
       return;
     }
     if (state === "win" || state === "over") { goal.spin++; if (pressed.e) { resetGame(); state = "select"; } return; }
+    if (dbg.on) { dbgStep(); return; }
     if (banner) banner--;
     if (race && raceStep()) return;
     if (shake) shake--;
@@ -2518,7 +2593,7 @@
       ctx.beginPath(); ctx.ellipse(r.x - camX, r.y, rr, rr * 0.3, 0, 0, 7); ctx.stroke();
     });
     dust.forEach(function (d) { circ("rgba(214,184,140," + Math.min(1, d.t / 18) + ")", d.x - camX, d.y, 2 + (d.t & 1)); });
-    if (!inMenu()) { drawPip(); drawPowerFx(); }
+    if (!inMenu() && !dbg.on) { drawPip(); drawPowerFx(); }
     if (flash) { ctx.fillStyle = "rgba(255,255,255," + flash / 16 + ")"; ctx.fillRect(0, 0, W, H); }
     if (shiftFx) { ctx.fillStyle = "rgba(200,60,255," + (shiftFx / 60) + ")"; ctx.fillRect(0, 0, W, H); }
     popups.forEach(function (u) { text(u.s || "SHIFT!", u.x - camX, u.y, 10, u.t >> 2 & 1 ? (u.s ? "#ffd23f" : "#ff8cff") : "#fff", "center"); });
@@ -2578,7 +2653,7 @@
       text("ARROWS  choose     ENTER  start     ESC  back", W / 2, 224, 9, (tick >> 5) & 1 ? "#9ee0ff" : "#fff", "center");
       return;
     }
-    drawHUD();
+    if (dbg.on && state === "play") drawDebug(); else drawHUD();
     if (state === "clear") {
       var cl = [NAMES[ch] + " GOT THROUGH " + LV.name, "TIME " + fmtTime() + "   SPARKS " + p.sparks, "BONUS " + bonus, "SCORE " + score];
       if (endGate) cl.push("50+ SPARKS: ENTERING THE PRISM TUNNEL", "PRESS ENTER FOR THE PRISM GATE");
@@ -2679,6 +2754,8 @@
     ctx.strokeText("PANGOLIN RUSH", cx, by + 19); ctx.fillStyle = "#ffd23f"; ctx.fillText("PANGOLIN RUSH", cx, by + 19);
     text("3  ·  THREE ZONES, NINE ACTS", cx, by + 38, 10, "#ffffff", "center");
     if (cheat) { gems(W - 80, 12, 7); text("ALL SHARDS", W - 8, 30, 9, hue(0, 72), "right"); }
+    if (dbgFx) dbgFx--;
+    if (dbgOK) text(dbgFx && (t >> 2) & 1 ? "DEBUG MODE UNLOCKED!" : "DEBUG: PRESS Q IN A LEVEL", 8, 16, 9, dbgFx ? "#ffffff" : "#ff8cff");
     if (rise >= 1 && (t >> 5) & 1) { text("PRESS ENTER", cx, 212, 13, "#000", "center"); text("PRESS ENTER", cx - 1, 211, 13, "#ffd23f", "center"); }
     text("\u00a9 2026 PANGOLIN RUSH TEAM", cx, 234, 8, "#fff", "center");
   }
