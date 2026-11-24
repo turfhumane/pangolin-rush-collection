@@ -658,6 +658,19 @@
     p.vx = Math.max(-cap, Math.min(cap, p.vx));
     // PROTO PIP: OVERDRIVE and NOVA: STARDRIVE, hold X, watch the heat
     p.boost = false;
+    // PROTO PIP: PIT SENSE (game one), visor flashes before a gap; at Overdrive speed he hops the edge by himself
+    p.pitAhead = false;
+    if (ch === 4 && p.ground && p.g > 0 && !p.plat && !deadT && !p.lag) {
+      var psd = p.vx ? (p.vx > 0 ? 1 : -1) : (p.dir || 1), psr = 70 + Math.abs(p.vx) * 9;
+      for (var pso = 12; pso <= psr; pso += 6) if (inPit(p.x + psd * pso)) { p.pitAhead = true; break; }
+      if (p.pitAhead) {
+        if (!p.psWarn) popups.push({ x: p.x, y: p.y - 34 * p.g, t: 30, g: p.g, s: "PIT!" });
+        p.psWarn = 20;
+        if (Math.abs(p.vx) > TOPS[4] && !pressed.j && (inPit(p.x + p.vx * 2) || inPit(p.x + p.vx))) { pressed.j = true; p.autoHop = 14; popups.push({ x: p.x, y: p.y - 30 * p.g, t: 25, g: p.g, s: "HOP!" }); }
+      }
+    }
+    if (p.psWarn) p.psWarn--;
+    if (p.autoHop) p.autoHop--;
     if (ch === 4 || ch === 6) {
       if (p.lock) { p.lock--; p.heat = Math.max(0, p.heat - 1 / 120); }
       else if (keys.x && !p.lag && !p.pound) {
@@ -710,7 +723,7 @@
     if (pressed.j && p.ground) {
       p.vy = (ch === 2 ? JUMP * 1.054 : JUMP) * (p.prism ? 1.2 : 1) * p.g; p.ground = false; p.plat = null; p.jumping = true; p.held = true;
     }
-    if (!keys.j && p.jumping && !p.sprung && p.vy * p.g < JUMP_CUT) p.vy = JUMP_CUT * p.g;
+    if (!keys.j && !p.autoHop && p.jumping && !p.sprung && p.vy * p.g < JUMP_CUT) p.vy = JUMP_CUT * p.g;
     // JUNO: glide while holding jump and falling (either gravity)
     p.glide = ch === 1 && !p.ground && keys.j && p.vy * p.g > 0;
     if (p.glide) { p.rolling = false; if (Math.abs(p.vx) < top + 0.6) p.vx += p.dir * 0.05; }
@@ -1650,6 +1663,7 @@
     var vx = x + d * 7 - 3;
     circ("rgba(255,40,40," + (0.25 + 0.15 * Math.sin(tick * 0.2)) + ")", x + d * 7, y - 18, 5);
     rect("#3a0d0d", vx, y - 20, 7, 3); rect("#ff2b2b", vx + 1, y - 19, 5, 1); rect("#ffc0c0", vx + (d > 0 ? 4 : 1), y - 19, 1, 1);
+    if (ch === 4 && p && p.psWarn && (tick >> 2) & 1 && Math.abs(x - (p.x - camX)) < 2) { circ("rgba(255,220,40,0.55)", x + d * 7, y - 18, 7); rect("#ffe040", vx + 1, y - 19, 5, 1); }
   }
   function protoBall(x, cy, ang) {
     circ("rgba(200,210,220,0.3)", x - 8, cy, 7);
