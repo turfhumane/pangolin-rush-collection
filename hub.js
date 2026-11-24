@@ -368,6 +368,7 @@
   }
   function hurtP(fall) {
     if (!fall && (p.inv > 0 || OM && OM.dead)) return;
+    if (!fall && ch === 6 && p.boosting) { p.inv = 30; popup("CLANG!", "#c8d0d8"); return; }
     hearts--; p.inv = 100; snd("lose"); shake = 10;
     if (!fall) { p.vy = 0.3; p.ground = false; p.s = 0; }
     if (hearts <= 0) { state = "bosslose"; endT = 0; snd("die"); }

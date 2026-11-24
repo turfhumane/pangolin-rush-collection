@@ -420,7 +420,7 @@
   var lsel = 0, shards = 0, cheat = false, SP = null, endGate = false, skygate = null;
   var SHARD_COL = ["#ff4a5a", "#ff9a2a", "#ffd23f", "#4ade80", "#38bdf8", "#7c6cff", "#e05cf0"];
   var SHARD_NAME = ["RED", "ORANGE", "YELLOW", "GREEN", "BLUE", "INDIGO", "VIOLET"];
-  var ABIL = [["Rolls faster downhill.", "Jump in air or X:", "Scale Dash"], ["Hold jump to glide,", "Down to dive."], ["Tough as nails.", "X: quill burst", "Down (air): ground pound"], ["Jump again in the air:", "Heart Hop"], ["Hold X: Overdrive", "Fastest on the ground!"], ["X: Tongue Zip", "Grabs foes and boxes."], ["Hold jump: Star Hover", "Hold X: Stardrive"]];
+  var ABIL = [["Rolls faster downhill.", "Jump in air or X:", "Scale Dash"], ["Hold jump to glide,", "Down to dive."], ["Tough as nails.", "X: quill burst", "Down (air): ground pound"], ["Jump again in the air:", "Heart Hop"], ["Hold X: Armored Overdrive", "Smashes through anything!"], ["X: Tongue Zip", "Grabs foes and boxes."], ["Hold jump: Star Hover", "Hold X: Stardrive"]];
   var BALL = ["#138d83", "#e8892b", "#7a4a24", "#ff8fc4", "#9aa2ab", "#3fcf5a", "#2a2f5a"], BALL2 = ["#0b5e57", "#a85a14", "#3d2210", "#e0609e", "#5a6470", "#1f8a34", "#ffe27a"];
   var ICON = ["#1fb5a5", "#e8892b", "#8a5a2e", "#ff8fc4", "#b9c0c8", "#3fcf5a", "#2a2f5a"], ICON2 = ["#f3e3b5", "#fbe8c4", "#f1dfb8", "#fff0d6", "#ff2b2b", "#fff0a0", "#ffe27a"];
 
@@ -508,6 +508,8 @@
 
   function hurt(fromX) {
     if (p.inv > 0 || deadT) return;
+    // PROTO PIP: ARMORED OVERDRIVE, nothing hurts him while he boosts
+    if (ch === 4 && p.boost) { p.inv = 12; popups.push({ x: p.x, y: p.y - 34 * p.g, t: 30, g: p.g, s: "CLANG!" }); return; }
     if (p.star || p.prism) return;
     if (p.shield) {
       p.shield = false; p.inv = 90; flash = 6;

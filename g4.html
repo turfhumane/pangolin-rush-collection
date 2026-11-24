@@ -195,7 +195,7 @@
     { n: "SUZIE", col: hex(0xff7a9a), bel: hex(0xffe4ea), shoe: hex(0xff2d6a), top: 0.414, acc: 0.011, jump: 0.42, ab: ["Jump again in the air:", "HEART HOP", "(a double jump)"] },
     { n: "KAI", col: hex(0x3fcf5a), bel: hex(0xfff0a0), shoe: hex(0x2a7fff), top: 0.42, acc: 0.0112, jump: 0.43, ab: ["NEW! A chameleon with a long reach.", "X: TONGUE ZIP", "Zips onto the nearest foe or box."] },
     { n: "NOVA", col: hex(0x2a2f5a), bel: hex(0xffe27a), shoe: hex(0xff7a2a), top: 0.4725, acc: 0.0105, jump: 0.42, ab: ["A robot pangolin made of star metal.", "Hold jump: STAR HOVER", "Hold X: STARDRIVE BOOST"] },
-    { n: "PROTO PIP", col: hex(0xc8d0d8), bel: hex(0x8a96a2), shoe: hex(0x5a6470), top: 0.4725, acc: 0.0105, jump: 0.42, vis: [1, 0.1, 0.1], ab: ["Pip's old robot rival is back.", "Hold X: OVERDRIVE BOOST", "Watch the heat!"] }
+    { n: "PROTO PIP", col: hex(0xc8d0d8), bel: hex(0x8a96a2), shoe: hex(0x5a6470), top: 0.4725, acc: 0.0105, jump: 0.42, vis: [1, 0.1, 0.1], ab: ["Pip's old robot rival is back.", "Hold X: ARMORED OVERDRIVE", "Nothing hurts him while boosting!"] }
   ];
   var ITEMCOL = { s: hex(0xffd23f), h: hex(0x3aa0ff), f: hex(0xff4040), u: hex(0x1fb5a5), i: hex(0xffffff) };
   var ITEMNAME = { s: "+10 SPARKS", h: "SHIELD", f: "SPEED SHOES", u: "1-UP", i: "INVINCIBLE" };
@@ -816,6 +816,7 @@
   }
   function hurt() {
     if (p.inv > 0 || p.star > 0 || p.ultra || deathT) return;
+    if (ch === 6 && p.boosting) { p.inv = 30; popup("CLANG!"); return; }
     if (p.shield) { p.shield = false; p.inv = 90; snd("pop"); return; }
     if (p.sparks <= 0) { die(); return; }
     var n = Math.min(p.sparks, 12);
