@@ -415,7 +415,7 @@
 
   // ---------- state ----------
   var state = "title", p, score, lives, frames, camX = 0, tick = 0, deadT = 0, bonus = 0, flash = 0, banner = 0;
-  var shiftFx = 0, flipCD = 0, popups = [], shake = 0, rings = [], dust = [];
+  var hbs = [], shiftFx = 0, flipCD = 0, popups = [], shake = 0, rings = [], dust = [];
   var ch = 0, NAMES = ["PIP", "JUNO", "SPIKES", "SUZIE", "PROTO PIP", "KAI", "NOVA"], NCH = 7;
   try { if (window.PRC && PRC.ch) { var pci = NAMES.indexOf(PRC.ch); if (pci >= 0) ch = pci; } } catch (e) {}
   // HARD MODE: H on the title / menus; saved in localStorage "pr_hard"; the hub passes its setting in PRC.hard
@@ -473,7 +473,7 @@
   var lsel = 0, shards = 0, cheat = false, SP = null, endGate = false, skygate = null;
   var SHARD_COL = ["#ff4a5a", "#ff9a2a", "#ffd23f", "#4ade80", "#38bdf8", "#7c6cff", "#e05cf0"];
   var SHARD_NAME = ["RED", "ORANGE", "YELLOW", "GREEN", "BLUE", "INDIGO", "VIOLET"];
-  var ABIL = [["Rolls faster downhill.", "Jump in air or X:", "Scale Dash"], ["Hold jump to glide,", "Down to dive."], ["Tough as nails.", "X: quill burst", "Down (air): ground pound"], ["Jump again in the air:", "Heart Hop"], ["Hold X: Armored Overdrive", "Smashes through anything!"], ["X: Tongue Zip", "Grabs foes and boxes."], ["Hold jump: Star Hover", "Hold X: Stardrive"]];
+  var ABIL = [["The fastest runner.", "Jump in air or X:", "Scale Dash"], ["Hold jump to glide,", "Down: dive, bounce", "back up and glide!"], ["Tough as nails.", "X: quill burst", "Down (air): ground pound"], ["Jump again in the air:", "Heart Hop + heart burst", "pops foes below"], ["Hold X: Armored Overdrive", "Smashes through anything!"], ["X: Tongue Zip", "Grabs foes and boxes,", "or grapples ledges."], ["Hold jump: Star Hover", "Hold X: Stardrive"]];
   var BALL = ["#138d83", "#e8892b", "#7a4a24", "#ff8fc4", "#9aa2ab", "#3fcf5a", "#2a2f5a"], BALL2 = ["#0b5e57", "#a85a14", "#3d2210", "#e0609e", "#5a6470", "#1f8a34", "#ffe27a"];
   var ICON = ["#1fb5a5", "#e8892b", "#8a5a2e", "#ff8fc4", "#b9c0c8", "#3fcf5a", "#2a2f5a"], ICON2 = ["#f3e3b5", "#fbe8c4", "#f1dfb8", "#fff0d6", "#ff2b2b", "#fff0a0", "#ffe27a"];
 
@@ -484,7 +484,7 @@
   }
   function startZone(n) {
     dbg.on = false; zone = n; buildLevel(); frames = 0; p = newPlayer(); p.sparks = 0; camX = 0; banner = 150;
-    shiftFx = 0; flipCD = 0; popups = []; shake = 0; rings = []; dust = [];
+    hbs = []; shiftFx = 0; flipCD = 0; popups = []; shake = 0; rings = []; dust = [];
   }
   function resetGame() { score = 0; lives = 3; shards = cheat ? 7 : 0; startZone(0); }
   function nextZone() {
@@ -574,6 +574,11 @@
       p.sparks = 0; p.inv = 100; flash = 8;
       p.vy = -3.6 * p.g; p.vx = (p.x < fromX ? -1 : 1) * 2.2; p.ground = false; p.plat = null; p.jumping = false; p.rolling = false; p.dive = false;
     } else die();
+  }
+  function diveBounce() {
+    p.dive = false; p.diveHold = false; p.vy = JUMP * 0.92 * p.g; p.ground = false; p.plat = null; p.jumping = true; p.sprung = true; p.rolling = false;
+    popups.push({ x: p.x, y: p.y - 30 * p.g, t: 35, g: p.g, s: "BOUNCE!" });
+    for (var bi = 0; bi < 6; bi++) dust.push({ x: p.x + (bi - 2.5) * 3, y: p.y, vx: (bi - 2.5) * 0.6, vy: -0.4 * p.g, t: 14, g: 0 });
   }
   function die() { if (deadT) return; deadT = 90; p.vy = -5 * p.g; p.vx = 0; p.rolling = false; p.dive = false; p.pound = false; p.quill = 0; p.lag = 0; }
   // SPIKES tuning: quill reach is 60% of the old values (box 28, mech 52, ring 24)
@@ -879,7 +884,7 @@
   var ACC = 0.046875, DEC = 0.5, FRIC = 0.046875, AIR = 0.09375, TOP = 6, GRAV = 0.21875, JUMP = -6.5, JUMP_CUT = -4,
     ROLL_FRIC = 0.0234375, ROLL_DEC = 0.125, SLP = 0.125, SLP_UP = 0.078125, SLP_DOWN = 0.3125;
   // Pip runs at the classic 6; Juno and Spikes keep their old 90% and 85% of Pip's speed
-  var TOPS = [6, 5.4, 5.1, 5.5, 6.3, 5.6, 6.3];
+  var TOPS = [6.6, 5.4, 5.1, 5.5, 6.3, 5.6, 6.3];
 
   // RACE: returns true while the player is frozen (countdown or result)
   function cageX() { return goal.x + 40; }
@@ -1018,6 +1023,7 @@
     if (shiftFx) shiftFx--;
     if (flipCD) flipCD--;
     popups = popups.filter(function (u) { u.t--; u.y -= 0.5 * u.g; return u.t > 0; });
+    hbs = hbs.filter(function (h) { h.x += h.vx; h.y += h.vy; return --h.t > 0; });
     // SPIKES: quill burst
     if (p.quill) p.quill--;
     if (p.qcd) p.qcd--;
@@ -1083,7 +1089,7 @@
       else if (keys.x && !p.lag && !p.pound) {
         p.boost = true; p.heat += 1 / 110;
         if (p.heat >= 1) { p.heat = 1; p.lock = 120; p.boost = false; popups.push({ x: p.x, y: p.y - 34 * p.g, t: 50, g: p.g, s: "OVERHEAT!" }); }
-      } else p.heat = Math.max(0, p.heat - 1 / (ch === 6 ? 40 : 70));
+      } else p.heat = Math.max(0, p.heat - 1 / 40);
       if (p.boost) {
         if (l && !r) p.dir = -1; else if (r && !l) p.dir = 1;
         p.vx = p.dir * (ch === 6 ? 9 : 10.5); p.rolling = false; p.dive = false;
@@ -1100,12 +1106,24 @@
         enemies.forEach(function (e) { if (e.alive) zc(e.x, e.c ? ceilY(e.x) + 6 : hill(e.x) - 6); });
         waspers.forEach(function (w) { if (w.alive) zc(w.x, w.y); });
         boxes.forEach(function (b) { if (!b.gone) zc(b.x, hill(b.x) - 8); });
-        if (zb) { p.zip = { x: zb.x, y: zb.y, t: 0 }; p.dash = 0; p.dive = false; p.pound = false; }
+        // TONGUE GRAPPLE: no foe or box in reach, so grab the nearest ledge, platform edge or spring ahead/above
+        var gr = false;
+        if (!zb && p.g > 0) {
+          zd = 170;
+          var zg = function (tx, ty, pl) { var dx = tx - p.x, dy = ty - (p.y - 8), dd = Math.hypot(dx, dy); if (dd < zd && dd > 24 && dy < 30 && dy > -120 && dx * p.dir > 8) { zd = dd; zb = { x: tx, y: ty, pl: pl, ox: pl ? tx - pl.x : 0 }; } };
+          platforms.forEach(function (pl) { var ein = Math.min(14, pl.w / 2), ex = p.dir > 0 ? pl.x + ein : pl.x + pl.w - ein; if ((ex - p.x) * p.dir < 8) ex = Math.max(pl.x + ein, Math.min(pl.x + pl.w - ein, p.x + p.dir * 30)); zg(ex, pl.y - 14, pl); });
+          springs.forEach(function (sp) { zg(sp.x, hill(sp.x) - 16); });
+          for (var gx = 16; gx <= 168; gx += 8) { var lx = p.x + p.dir * gx, lg = ground(lx), pg = ground(lx - p.dir * 8);
+            if (lg < 1e8 && pg > lg + 12 && lg < p.y + 40) zg(lx + p.dir * 10, lg - 14); }
+          gr = !!zb;
+        }
+        if (zb) { p.zip = { x: zb.x, y: zb.y, t: 0, gr: gr, pl: gr ? zb.pl : null, ox: zb.ox }; p.dash = 0; p.dive = false; p.pound = false; if (gr) popups.push({ x: p.x, y: p.y - 30 * p.g, t: 25, g: p.g, s: "GRAB!" }); }
         else { p.vx = p.dir * 7; popups.push({ x: p.x, y: p.y - 30 * p.g, t: 25, g: p.g, s: "THWIP!" }); }
       }
       if (p.zip) {
+        if (p.zip.pl) { p.zip.x = p.zip.pl.x + p.zip.ox; p.zip.y = p.zip.pl.y - 14; }
         var Zq = p.zip, zdx = Zq.x - p.x, zdy = Zq.y - (p.y - 8 * p.g), zl = Math.hypot(zdx, zdy) || 1;
-        if (++Zq.t > 28 || zl < 9) { p.zip = null; p.vy = JUMP * 0.55 * p.g; p.jumping = true; }
+        if (++Zq.t > 28 || zl < 9) { p.zip = null; p.vy = JUMP * (Zq.gr ? 0.4 : 0.55) * p.g; p.jumping = true; if (Zq.gr) p.vx = Math.max(-1.2, Math.min(1.2, p.vx)); }
         else { p.vx = zdx / zl * 8; p.vy = zdy / zl * 8; p.ground = false; p.plat = null; p.jumping = true; p.rolling = false; if (zdx) p.dir = zdx > 0 ? 1 : -1; }
       }
     }
@@ -1125,6 +1143,12 @@
     if (ch === 3 && pressed.j && !p.ground && !p.hopUsed && !p.lag && !p.zip) {
       p.hopUsed = true; p.vy = JUMP * 0.9 * p.g; p.jumping = true; p.sprung = false; p.held = true; p.rolling = false;
       popups.push({ x: p.x, y: p.y - 30 * p.g, t: 30, g: p.g, s: "\u2665" }); pressed.j = false;
+      // HEART BURST: a pink shockwave just below her pops foes about one foe wide, a short way down
+      for (var hb = 0; hb < 8; hb++) { var ha = hb / 8 * 6.283; hbs.push({ x: p.x, y: p.y + 2 * p.g, vx: Math.cos(ha) * 1.6, vy: Math.sin(ha) * 0.9 + 0.5 * p.g, t: 18 }); }
+      enemies.forEach(function (e) { if (!e.alive) return; var ey = e.c ? ceilY(e.x) + 6 : hill(e.x) - 6, dv = (ey - p.y) * p.g;
+        if (Math.abs(e.x - p.x) < 16 && dv > -10 && dv < 34) { e.alive = false; e.pop = 20; score += 100; } });
+      waspers.forEach(function (w) { if (!w.alive) return; var dv = (w.y - p.y) * p.g;
+        if (Math.abs(w.x - p.x) < 16 && dv > -10 && dv < 34) { w.alive = false; w.pop = 20; score += 100; } });
     }
     // jump
     if (pressed.j && p.ground) {
@@ -1201,6 +1225,8 @@
     // head bump under a ceiling track
     if (p.g > 0 && p.vy < 0 && p.y - 18 < ceiling(p.x)) { p.y = ceiling(p.x) + 18; p.vy = 0; }
     if (p.ground && p.pound) { p.pound = false; poundLand(); }
+    // JUNO: DIVE BOUNCE, a dive that lands springs her back up, ready to glide again (one bounce per dive)
+    if (p.ground && p.dive && ch === 1) diveBounce();
     if (p.ground) { p.dive = false; p.dashUsed = false; p.dash = 0; p.sprung = false; }
     if (p.y > H + 30 || p.y < -40) die();
     if (deadT) return;
@@ -1279,7 +1305,8 @@
       if (Math.abs(p.x - e.x) < 14 && Math.abs(p.y - 8 * p.g - ey) < 13) {
         if (p.quill || atk || p.star || p.prism || (p.vy * p.g > 0 && (p.y - ey) * p.g < 2)) {
           e.alive = false; e.pop = 20; score += 100;
-          if (!p.ground && !p.quill) { p.vy = (keys.j ? -5 : -3.5) * p.g; p.jumping = true; p.dive = false; }
+          if (p.dive && ch === 1) diveBounce();
+          else if (!p.ground && !p.quill) { p.vy = (keys.j ? -5 : -3.5) * p.g; p.jumping = true; p.dive = false; }
         } else hurt(e.x);
       }
     });
@@ -1289,6 +1316,7 @@
       w.y = w.y0 + Math.sin(tick * 0.04 * HSPD + w.x) * 12;
       if (Math.abs(p.x - w.x) < 13 && Math.abs(pc - w.y) < 13) {
         if (p.quill || p.star || p.prism) { w.alive = false; w.pop = 20; score += 100; }
+        else if (atk && p.dive && ch === 1) { w.alive = false; w.pop = 20; score += 100; diveBounce(); }
         else if (atk) { w.alive = false; w.pop = 20; score += 100; p.vy = (keys.j ? -5 : -3.5) * p.g; p.jumping = true; p.ground = false; p.plat = null; p.dive = false; }
         else hurt(w.x);
       }
@@ -2668,6 +2696,7 @@
     if (!inMenu() && !dbg.on) { drawPip(); drawPowerFx(); }
     if (flash) { ctx.fillStyle = "rgba(255,255,255," + flash / 16 + ")"; ctx.fillRect(0, 0, W, H); }
     if (shiftFx) { ctx.fillStyle = "rgba(200,60,255," + (shiftFx / 60) + ")"; ctx.fillRect(0, 0, W, H); }
+    hbs.forEach(function (h) { heart(h.x - camX, h.y, 2, Math.min(1, h.t / 10)); });
     popups.forEach(function (u) { text(u.s || "SHIFT!", u.x - camX, u.y, 10, u.t >> 2 & 1 ? (u.s ? "#ffd23f" : "#ff8cff") : "#fff", "center"); });
 
     if (state === "controls") {

@@ -167,7 +167,7 @@
     if (ch === 5 || ch === 6) {
       if (q.lock > 0) { q.lock--; q.heat = Math.max(0, q.heat - 1 / 120); }
       else if (keys.x) { q.boosting = true; q.heat += 1 / 110; if (q.heat >= 1) { q.heat = 1; q.lock = 120; q.boosting = false; snd("heat"); popup("OVERHEAT!", "#ff6040"); } }
-      else q.heat = Math.max(0, q.heat - 1 / (ch === 5 ? 40 : 70));
+      else q.heat = Math.max(0, q.heat - 1 / 40);
       if (q.boosting) { q.s = Math.max(q.s, top * (ch === 5 ? 2.0 : 2.4)); q.roll = false; q.dive = false; if (tick % 6 === 0) snd("boost"); if (ch === 5 && !q.ground) q.vy = Math.max(q.vy, 0); }
     }
     // KAI: tongue zip onto grapple flowers (and the boss when it is down)
@@ -179,13 +179,30 @@
         var cand = function (x, y, z) { var d = Math.hypot(x - q.x, z - q.z, (y - q.y) * 0.5); if (d > 2 && d < bd && Math.abs(y - q.y) < 10.5) { bd = d; best = { x: x, y: y, z: z }; } };
         if (scene === "island") flowers.forEach(function (f) { cand(f.x, f.y, f.z); });
         if (scene === "boss" && OM && OM.ph === "down") cand(OM.x, 1.6, OM.z);
+        // TONGUE GRAPPLE: no flower in reach, so grab the nearest ledge or box top ahead/above
+        var gr = false;
+        if (!best) {
+          var h0 = q.h;
+          for (var ga = -2; ga <= 2; ga++) {
+            var gan = h0 + ga * 0.22, grx = Math.sin(gan), grz = Math.cos(gan), gpv = floorAt(q.x, q.z, q.y);
+            for (var gd = 2; gd <= 11; gd += 0.5) {
+              var gx = q.x + grx * gd, gz = q.z + grz * gd, gt = floorAt(gx, gz, q.y + 6.5);
+              if (gt > -1e8 && gt > gpv + 0.8) {
+                if (gt > q.y - 1.5) { var gx2 = gx + grx * 1.2, gz2 = gz + grz * 1.2, gt2 = floorAt(gx2, gz2, gt);
+                  if (gt2 > -1e8 && Math.abs(gt2 - gt) < 0.5) { gx = gx2; gz = gz2; }
+                  var gdd = Math.hypot(gx - q.x, gz - q.z, gt - q.y); if (gdd < bd) { bd = gdd; best = { x: gx, y: gt + 1.3, z: gz }; gr = true; } break; }
+              }
+              gpv = gt;
+            }
+          }
+        }
         q.zcd = 6; q.tongue = 1; snd("dash");
-        if (best) { q.zip = { x: best.x, y: best.y, z: best.z, t: 0 }; q.h = Math.atan2(best.x - q.x, best.z - q.z); q.ground = false; q.jumping = true; q.roll = false; q.dive = false; q.pound = false; }
+        if (best) { if (gr) popup("GRAB!", "#7fff8a"); q.zip = { x: best.x, y: best.y, z: best.z, t: 0, gr: gr }; q.h = Math.atan2(best.x - q.x, best.z - q.z); q.ground = false; q.jumping = true; q.roll = false; q.dive = false; q.pound = false; }
       }
       if (q.zip) {
         var Zp = q.zip; Zp.t++;
         var zx = Zp.x - q.x, zy = Zp.y - 0.6 - q.y, zz = Zp.z - q.z, zd = Math.hypot(zx, zy, zz);
-        if (zd < 0.9 || Zp.t > 34) { q.zip = null; q.vy = 0.22; q.s = Math.min(q.s, 0.2); }
+        if (zd < 0.9 || Zp.t > 34) { q.zip = null; q.vy = Zp.gr ? 0.16 : 0.22; q.s = Math.min(q.s, Zp.gr ? 0.06 : 0.2); }
         else { var zs = Math.min(0.85, zd); q.x += zx / zd * zs; q.y += zy / zd * zs; q.z += zz / zd * zs; q.vy = 0; q.spin += 0.5; q.tongue = 1; return; }
       }
     }
@@ -202,7 +219,8 @@
     if (pressed.j && q.ground) { q.vy = c.jump; q.ground = false; q.jumping = true; q.roll = false; q.dashUsed = false; q.hopUsed = false; q.sprung = false; snd("jump"); }
     else if (pressed.j && !q.ground) {
       if (ch === 0 && !q.dashUsed) { q.dashUsed = true; q.dash = 14; snd("dash"); }
-      if (ch === 3 && !q.hopUsed) { q.hopUsed = true; q.vy = c.jump * 0.88; q.sprung = false; snd("heart"); burst(q.x, q.y + 0.3, q.z, [1, 0.3, 0.5], 6); }
+      if (ch === 3 && !q.hopUsed) { q.hopUsed = true; q.vy = c.jump * 0.88; q.sprung = false; snd("heart"); burst(q.x, q.y + 0.3, q.z, [1, 0.3, 0.5], 6);
+        for (var hj = 0; hj < 10; hj++) { var ha = hj / 10 * 6.283; parts.push({ x: q.x, y: q.y - 0.2, z: q.z, vx: Math.cos(ha) * 0.1, vy: -0.03, vz: Math.sin(ha) * 0.1, t: 20, col: [1, 0.45, 0.7], s: 0.14, heart: true }); } }
     }
     if (ch === 0 && pressed.x && !q.ground && !q.dashUsed) { q.dashUsed = true; q.dash = 14; snd("dash"); }
     if (q.dash > 0) { q.dash--; q.s = Math.max(q.s, 0.75); q.vy = 0; }
@@ -244,13 +262,15 @@
     if (q.y < -4) splash();
   }
   function land() {
-    var q = p, wasPound = q.pound;
+    var q = p, wasPound = q.pound, wasDive = q.dive && ch === 1;
     q.ground = true; q.jumping = false; q.dive = false; q.dashUsed = false; q.hopUsed = false; q.glide = false; q.dash = 0; q.vy = 0;
     if (wasPound) {
       q.pound = false; snd("pound"); shake = 8;
       for (var i = 0; i < 14; i++) { var a = i / 14 * 6.28; parts.push({ x: q.x, y: q.y + 0.2, z: q.z, vx: Math.cos(a) * 0.25, vy: 0.05, vz: Math.sin(a) * 0.25, t: 18, col: [0.85, 0.75, 0.55], s: 0.18 }); }
       if (scene === "island") ROCKS.forEach(function (r) { if (!r.gone && inBox(r, q.x, q.z, 0.3) && Math.abs(q.y - r.y1) < 0.3) { r.gone = true; snd("pop"); burst((r.x0 + r.x1) / 2, 1, (r.z0 + r.z1) / 2, [0.65, 0.6, 0.55], 30); popup("CRACK!"); medalO[r.medal].hid = false; q.y = floorAt(q.x, q.z, q.y); } });
     }
+    // JUNO: DIVE BOUNCE, a dive that lands springs her back up, ready to glide again
+    if (wasDive && !wasPound) { q.ground = false; q.jumping = true; q.sprung = true; q.vy = CH[1].jump * 0.92; popup("BOUNCE!", "#ffb060"); snd("spring"); burst(q.x, q.y + 0.2, q.z, [1, 0.75, 0.4], 10); }
   }
   function splash() {
     burst(p.x, -0.5, p.z, [0.6, 0.8, 1], 20); snd("no");
@@ -422,7 +442,8 @@
     if (dd < 2.4 && Math.abs(dy) < 2.2) {
       if (B.ph === "down" && attacking() && !B.inv) {
         if (HARD && (B.hc = (B.hc || 0) + 1) % 3 === 2) popup("CLANG! ARMOR HELD", "#ff8080"); else B.hp--; B.inv = 40; snd("pop"); shake = 8; burst(B.x, B.y + 1, B.z, [1, 0.9, 0.3], 20);
-        p.zip = null; p.vy = 0.38; p.ground = false; p.jumping = true; p.pound = false; p.dive = false; p.s = 0.3; p.h = Math.atan2(dx, dz);
+        if (p.dive && ch === 1) { p.vy = CH[1].jump * 0.92; p.sprung = true; popup("BOUNCE!", "#ffb060"); } else p.vy = 0.38;
+        p.zip = null; p.ground = false; p.jumping = true; p.pound = false; p.dive = false; p.s = 0.3; p.h = Math.atan2(dx, dz);
         popup(B.hp > 0 ? "HIT! " + B.hp + " TO GO" : "GEARBOLT OMEGA IS DONE!", "#ffd23f");
         if (B.hp <= 3 && B.hp > 0) B.t = Math.max(B.t, 100);
         if (B.hp <= 0) { B.dead = 1; B.bombs = []; B.wave = null; }
