@@ -380,9 +380,10 @@
     zone = n; buildLevel(); frames = 0; p = newPlayer(); p.sparks = 0; camX = 0; banner = 150;
     hbs = []; shiftFx = 0; flipCD = 0; popups = []; shake = 0; rings = []; dust = [];
   }
-  function resetGame() { score = 0; lives = 3; shards = cheat ? 7 : 0; startZone(0); }
+  var winRep = false; // the hub hears about a finished game once per run, however the run reached "win"
+  function resetGame() { score = 0; lives = 3; shards = cheat ? 7 : 0; winRep = false; startZone(0); }
   function nextZone() {
-    if (zone < LEVELS.length - 1) { startZone(zone + 1); state = "play"; } else { state = "win"; try { if (window.PRC && PRC.report) PRC.report(shards >= 7 ? "true" : "win"); } catch (e) {} }
+    if (zone < LEVELS.length - 1) { startZone(zone + 1); state = "play"; } else { state = "win"; }
   }
   resetGame();
 
@@ -609,6 +610,7 @@
     else if (state !== "play" && paused) { paused = false; Music.pause(false); }
     if (paused) return;
     tick++;
+    if (state === "win" && !winRep) { winRep = true; try { if (window.PRC && PRC.report) PRC.report(shards >= 7 ? "true" : "win"); } catch (e) {} }
     if (state === "title") { titleT++; camX = (camX + 0.6) % (L - W); if (pressed.e || pressed.j) state = "controls"; return; }
     if (state === "controls") {
       camX = (camX + 0.6) % (L - W);

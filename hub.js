@@ -626,6 +626,12 @@
   }
 
   // ---------------------------------------------------------------- UI
+  // txt that shrinks its font to fit maxW (narrow windows)
+  function txtF(s, x, y, size, col, align, maxW) {
+    cx.font = "bold " + size + "px monospace"; var w = cx.measureText(s).width;
+    if (maxW > 0 && w > maxW) size = Math.max(4, Math.floor(size * maxW / w * 4) / 4);
+    txt(s, x, y, size, col, align);
+  }
   function txt(s, x, y, size, col, align) {
     cx.font = "bold " + size + "px monospace"; cx.textAlign = align || "left";
     cx.fillStyle = "rgba(0,0,0,0.75)"; cx.fillText(s, x + 1, y + 1); cx.fillStyle = col; cx.fillText(s, x, y);
@@ -651,8 +657,8 @@
       for (var i = 0; i < 4; i++) { var bx = mx - 66 + i * 44; cx.fillStyle = GCSS[i]; cx.fillRect(bx - 16, 92, 32, 22); txt(String(i + 1), bx, 109, 16, "#ffffff", "center"); txt(i % 2 ? "3D" : "2D", bx, 124, 7, "#d8e8ff", "center"); }
       txt("4 GAMES  \u2022  7 RUNNERS  \u2022  1 ISLAND FULL OF SECRETS", mx, 146, 8, "#ffffff", "center");
       if (blink) txt("PRESS ENTER", mx, 178, 14, "#ffd23f", "center");
-      txt("Arrows steer  \u2022  Space jump  \u2022  X ability  \u2022  Shift roll  \u2022  Enter play a portal", mx, 204, 7, "#d8e8ff", "center");
-      txt("Inside a game, BACKSPACE returns to the island.  Click the game first if keys don't work.", mx, 218, 7, "#d8e8ff", "center");
+      txtF("Arrows steer  \u2022  Space jump  \u2022  X ability  \u2022  Shift roll  \u2022  Enter play a portal", mx, 204, 7, "#d8e8ff", "center", VW - 12);
+      txtF("Inside a game, BACKSPACE returns to the island.  Click the game first if keys don't work.", mx, 218, 7, "#d8e8ff", "center", VW - 12);
       if (cheatMsg) txt("ALL 12 MEDALS!", mx, 232, 9, "#ff9ae0", "center");
       return;
     }

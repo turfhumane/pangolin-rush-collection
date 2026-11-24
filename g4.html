@@ -1642,6 +1642,12 @@
   }
 
   // ---------------------------------------------------------------- 2D overlay
+  // txt that shrinks its font to fit maxW (narrow windows): used on the how-to screen
+  function txtF(s, x, y, size, col, align, maxW) {
+    cx.font = "bold " + size + "px monospace"; var w = cx.measureText(s).width;
+    if (maxW > 0 && w > maxW) size = Math.max(4, Math.floor(size * maxW / w * 4) / 4);
+    txt(s, x, y, size, col, align);
+  }
   function txt(s, x, y, size, col, align) {
     cx.font = "bold " + size + "px monospace"; cx.textAlign = align || "left";
     cx.fillStyle = "rgba(0,0,0,0.75)"; cx.fillText(s, x + 1, y + 1); cx.fillStyle = col; cx.fillText(s, x, y);
@@ -1695,18 +1701,19 @@
     }
     if (state === "controls") {
       dim(0.6);
-      txt("HOW TO PLAY", mx, 26, 18, "#ffd23f", "center");
-      [["UP / DOWN or W / S", "run forward / back"], ["LEFT / RIGHT", "steer your runner (camera follows)"], ["A / D", "sidestep"], ["SPACE", "jump (hold for higher)"], ["SHIFT / CTRL", "roll while running (rolls build speed downhill)"],
-        ["X / K", "ability (Kai: Tongue Zip, Spikes: Quills, Nova: Boost)"], ["Q / E or MOUSE DRAG", "look around"], ["P / ESC", "pause      M  mute"]].forEach(function (l, i) {
-        txt(l[0], mx - 8, 48 + i * 12, 9, "#9ee0ff", "right"); txt(l[1], mx + 8, 48 + i * 12, 9, "#ffffff");
+      txtF("HOW TO PLAY", mx, 26, 18, "#ffd23f", "center", VW - 12);
+      [["UP / DOWN or W / S", "run forward / back"], ["LEFT / RIGHT", "steer your runner (camera follows)"], ["A / D", "sidestep"], ["SPACE", "jump (hold for higher)"], ["SHIFT / CTRL", "roll (builds speed downhill)"],
+        ["X / K", "runner ability (see runner select)"], ["Q / E or MOUSE DRAG", "look around"], ["P / ESC", "pause      M  mute"]].forEach(function (l, i) {
+        txtF(l[0], mx - 8, 48 + i * 12, 9, "#9ee0ff", "right", mx - 14); txtF(l[1], mx + 8, 48 + i * 12, 9, "#ffffff", "left", VW - mx - 14);
       });
-      txt("Grab spark rings. Get hit and you drop them.", mx, 146, 9, "#ffd23f", "center");
-      txt("Hit with zero sparks and you lose a life.", mx, 158, 9, "#ffd23f", "center");
-      txt("Hit LOOPS at full speed, grind gold RAILS, and pick the HIGH or LOW road at every split!", mx, 170, 8, "#ffffff", "center");
-      txt("Reach the goal sign, then beat the boss of each world. Watch for spikes!", mx, 182, 8, "#ffffff", "center");
-      txt("Sky Dive Special Stages: finish a zone with 40+ sparks, or find the hidden giant ring.", mx, 194, 7, "#9ee0ff", "center");
-      txt("V: ULTRA form (all 3 shards, 50 sparks)", mx, 206, 7, "#9ee0ff", "center");
-      txt("ENTER  next      ESC  back", mx, 224, 10, blink ? "#9ee0ff" : "#ffffff", "center");
+      txtF("Grab spark rings. Get hit and you drop them.", mx, 146, 9, "#ffd23f", "center", VW - 12);
+      txtF("Hit with zero sparks and you lose a life.", mx, 158, 9, "#ffd23f", "center", VW - 12);
+      txtF("Hit LOOPS at full speed, grind gold RAILS, and pick the HIGH or LOW road at every split!", mx, 170, 8, "#ffffff", "center", VW - 12);
+      txtF("Reach the goal sign, then beat the boss of each world. Watch for spikes!", mx, 182, 8, "#ffffff", "center", VW - 12);
+      txtF("Sky Dive Special Stages: finish a zone with 40+ sparks, or find the hidden giant ring.", mx, 194, 7, "#9ee0ff", "center", VW - 12);
+      txtF("Kai: X with nothing to zip grapples the nearest ledge, platform or spring ahead.", mx, 206, 7, "#9ee0ff", "center", VW - 12);
+      txtF("V: ULTRA form (all 3 shards, 50 sparks)", mx, 216, 7, "#9ee0ff", "center", VW - 12);
+      txtF("ENTER  next      ESC  back", mx, 232, 10, blink ? "#9ee0ff" : "#ffffff", "center", VW - 12);
       return;
     }
     if (state === "select") {
