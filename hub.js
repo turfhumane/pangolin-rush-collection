@@ -24,9 +24,13 @@
     Space: "j", KeyJ: "j", KeyZ: "j", Enter: "e", ShiftLeft: "roll", ShiftRight: "roll", ControlLeft: "roll", ControlRight: "roll", KeyC: "roll",
     KeyX: "x", KeyK: "x", KeyQ: "cl", KeyE: "cr", KeyM: "m", KeyP: "p", Escape: "esc", KeyG: "g", KeyN: "n", Tab: "tab",
     Digit1: "d1", Digit2: "d2", Digit3: "d3", Digit4: "d4", Digit5: "d5", Digit6: "d6", Digit7: "d7" };
+  // HARD MODE: H on the title or pause screen; saved in localStorage "pr_hard" and handed to each game in PRC.hard
+  var HARD = false; try { HARD = localStorage.getItem("pr_hard") === "1"; } catch (e) {}
+  function setHard(v) { HARD = !!v; try { localStorage.setItem("pr_hard", HARD ? "1" : "0"); } catch (e) {} }
   addEventListener("keydown", function (e) {
     if (gameOpen >= 0) return;
     unlockAudio();
+    if (e.code === "KeyH" && !e.repeat && (state === "title" || paused)) { setHard(!HARD); snd("tick"); e.preventDefault(); return; }
     if (state === "title" && /^Key[A-Z]$/.test(e.code) && !e.repeat) {
       codeBuf = (codeBuf + e.code.charAt(3)).slice(-6);
       if (codeBuf === "ISLAND") { codeBuf = ""; medals = 4095; sv("prc_medals", medals); cheatMsg = 150; snd("item"); }
@@ -316,7 +320,7 @@
   // ---------------------------------------------------------------- the games
   var gw = document.getElementById("gw"), gf = document.getElementById("gf"), backB = document.getElementById("back");
   function prelude(i) {
-    return "<script>window.PRC={ch:" + JSON.stringify(CH[ch].n) + ",game:" + (i + 1) + ",report:function(e){try{parent.postMessage({prc:'report',g:" + i + ",e:e},'*')}catch(x){}}};" +
+    return "<script>window.PRC={ch:" + JSON.stringify(CH[ch].n) + ",game:" + (i + 1) + ",hard:" + (HARD ? "true" : "false") + ",setHard:function(v){try{parent.postMessage({prc:'hard',v:!!v},'*')}catch(x){}}," + "report:function(e){try{parent.postMessage({prc:'report',g:" + i + ",e:e},'*')}catch(x){}}};" +
       "addEventListener('keydown',function(e){if(e.code==='Backspace'){e.preventDefault();e.stopPropagation();try{parent.postMessage({prc:'hub'},'*')}catch(x){}}},true);<\/script>";
   }
   var GAMES = [], loading = -1;
@@ -351,6 +355,7 @@
   addEventListener("message", function (e) {
     var d = e.data; if (!d || !d.prc) return;
     if (d.prc === "hub") closeGame();
+    if (d.prc === "hard") setHard(d.v);
     if (d.prc === "report" && d.g >= 0 && d.g < 4) {
       var lvl = d.e === "true" ? 2 : 1;
       if (lvl > (trophy[d.g] || 0)) { trophy[d.g] = lvl; saveTrophy(); newTrophy = 240; newTrophyG = d.g; }
@@ -386,7 +391,7 @@
     if (B.ph === "intro") { B.y = 7 + Math.sin(B.t * 0.05); if (B.t > 120) { B.ph = "hover"; B.t = 0; } }
     else if (B.ph === "hover") {
       B.a += 0.012 + (8 - B.hp) * 0.002; B.x = Math.sin(B.a) * 10; B.z = Math.cos(B.a) * 10; B.y = 7 + Math.sin(B.t * 0.08) * 0.6;
-      if (B.t % Math.max(30, 55 - (8 - B.hp) * 4) === 0) B.bombs.push({ x: p.x, z: p.z, y: B.y, t: 60 });
+      if (B.t % Math.round(Math.max(30, 55 - (8 - B.hp) * 4) / (HARD ? 1.3 : 1)) === 0) B.bombs.push({ x: p.x, z: p.z, y: B.y, t: 60 });
       if (B.t > 240) { B.ph = "aim"; B.t = 0; }
     } else if (B.ph === "aim") {
       if (B.t < 45) { B.x += (p.x - B.x) * 0.05; B.z += (p.z - B.z) * 0.05; } B.y += (8 - B.y) * 0.1;
@@ -401,7 +406,7 @@
       var w = B.wave;
       if (w.d > 0) w.d--;
       else {
-        w.r += 0.24;
+        w.r += HARD ? 0.31 : 0.24;
         var dr = Math.hypot(p.x - w.x, p.z - w.z) - w.r;
         if (Math.abs(dr) < 0.4 && p.y < 0.35 && !p.launch) hurtP(false);
       }
@@ -416,7 +421,7 @@
     var dx = p.x - B.x, dz = p.z - B.z, dy = p.y + 0.7 - (B.y + 0.6), dd = Math.hypot(dx, dz);
     if (dd < 2.4 && Math.abs(dy) < 2.2) {
       if (B.ph === "down" && attacking() && !B.inv) {
-        B.hp--; B.inv = 40; snd("pop"); shake = 8; burst(B.x, B.y + 1, B.z, [1, 0.9, 0.3], 20);
+        if (HARD && (B.hc = (B.hc || 0) + 1) % 3 === 2) popup("CLANG! ARMOR HELD", "#ff8080"); else B.hp--; B.inv = 40; snd("pop"); shake = 8; burst(B.x, B.y + 1, B.z, [1, 0.9, 0.3], 20);
         p.zip = null; p.vy = 0.38; p.ground = false; p.jumping = true; p.pound = false; p.dive = false; p.s = 0.3; p.h = Math.atan2(dx, dz);
         popup(B.hp > 0 ? "HIT! " + B.hp + " TO GO" : "GEARBOLT OMEGA IS DONE!", "#ffd23f");
         if (B.hp <= 3 && B.hp > 0) B.t = Math.max(B.t, 100);
@@ -607,6 +612,14 @@
   function panel(x, y, w, h, a) { cx.fillStyle = "rgba(10,8,36," + (a || 0.72) + ")"; cx.beginPath(); cx.moveTo(x + 8, y); cx.lineTo(x + w, y); cx.lineTo(x + w - 8, y + h); cx.lineTo(x, y + h); cx.closePath(); cx.fill(); }
   function medalIcon(x, y, r, on) { cx.fillStyle = on ? "#ffd23f" : "rgba(255,255,255,0.2)"; cx.beginPath(); cx.arc(x, y, r, 0, 7); cx.fill(); if (on) { cx.fillStyle = "#fff6c0"; cx.beginPath(); cx.arc(x - r * 0.3, y - r * 0.3, r * 0.35, 0, 7); cx.fill(); } }
   function drawUI() {
+    drawUI0();
+    var hmx = VW / 2;
+    if (gameOpen >= 0) return;
+    if (state === "title") txt("H: HARD MODE " + (HARD ? "ON" : "OFF"), VW - 6, 12, 9, HARD ? "#ff5050" : "#c8d0e0", "right");
+    else if (paused) txt("H: HARD MODE " + (HARD ? "ON" : "OFF"), hmx, 142, 9, HARD ? "#ff5050" : "#c8d0e0", "center");
+    if (HARD && state !== "title") { cx.fillStyle = "#c81e1e"; cx.fillRect(VW - 40, 32, 34, 13); txt("HARD", VW - 23, 42, 9, "#ffffff", "center"); }
+  }
+  function drawUI0() {
     cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, W, H); cx.setTransform(k, 0, 0, k, 0, 0);
     var mx = VW / 2, blink = (tick >> 5) & 1;
     if (state === "title") {

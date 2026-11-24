@@ -38,6 +38,7 @@
       cheatBuf = (cheatBuf + e.code.charAt(3)).slice(-5);
       if (cheatBuf === "PRISM") { cheat = true; shards = 7; cheatBuf = ""; e.preventDefault(); return; }
     }
+    if (e.code === "KeyH" && !e.repeat && inMenu()) { setHard(!HARD); buildLevel(); e.preventDefault(); return; }
     var k = MAP[e.code]; if (!k) return;
     e.preventDefault(); if (!keys[k]) pressed[k] = true; keys[k] = true;
   });
@@ -303,6 +304,7 @@
       mech: !!LV.boss.mech, mode: "walk", mt: 0, next: 120, cnt: 0, tel: 0, lift: 0, low: 0, sink: 0, wp: 0, bc: 0, bf: 0, dir: -1,
       card: 0, seen: 0, dt: 0, ex: [], waves: [], pod: null }
       : { x: -999, y: 0, t: 0, hp: 0, max: 0, rate: 120, fl: 0, st: 3, bolts: [] };
+    hardLevel();
   }
 
   // ---------- state ----------
@@ -310,6 +312,57 @@
   var shiftFx = 0, flipCD = 0, popups = [], shake = 0, rings = [], dust = [];
   var ch = 0, NAMES = ["PIP", "JUNO", "SPIKES", "SUZIE", "PROTO PIP", "KAI", "NOVA"], NCH = 7;
   try { if (window.PRC && PRC.ch) { var pci = NAMES.indexOf(PRC.ch); if (pci >= 0) ch = pci; } } catch (e) {}
+  // HARD MODE: H on the title / menus; saved in localStorage "pr_hard"; the hub passes its setting in PRC.hard
+  var HARD = false, HSPD = 1, hAcc = 0;
+  try { HARD = localStorage.getItem("pr_hard") === "1"; } catch (e) {}
+  try { if (window.PRC && PRC.hard != null) HARD = !!PRC.hard; } catch (e) {}
+  function setHard(v) {
+    HARD = !!v;
+    try { localStorage.setItem("pr_hard", HARD ? "1" : "0"); } catch (e) {}
+    try { if (window.PRC && PRC.setHard) PRC.setHard(HARD); } catch (e) {}
+  }
+  // applied at the end of buildLevel: twin beetles on their own patrol, a few extra waspers away from pits and springs,
+  // half the sparks and item boxes. Level geometry is never touched.
+  function hardLevel() {
+    HSPD = HARD ? 1.3 : 1; hAcc = 0;
+    if (!HARD) return;
+    sparks = sparks.filter(function (s, i) { return i % 2 === 0; });
+    boxes = boxes.filter(function (b, i) { return i % 2 === 0; });
+    var twins = [];
+    enemies.forEach(function (e) {
+      if (e.b - e.a < 40) return;
+      var tx = e.a + e.b - e.x;
+      if (Math.abs(tx - e.x) < 20) tx = e.x + (e.x - e.a > e.b - e.x ? -1 : 1) * (e.b - e.a) / 2;
+      twins.push({ x: tx, a: e.a, b: e.b, d: 1, alive: true, pop: 0, c: e.c });
+    });
+    enemies = enemies.concat(twins);
+    var near = function (x, r) {
+      for (var i = 0; i < PITS.length; i++) if (x > PITS[i][0] - r && x < PITS[i][1] + r) return true;
+      for (var j = 0; j < springs.length; j++) if (Math.abs(springs[j].x - x) < r) return true;
+      if (skygate && Math.abs(skygate.x - x) < r + 20) return true;
+      return false;
+    };
+    var extra = [];
+    waspers.forEach(function (w, i) {
+      if (i % 2) return;
+      var nx = w.x + 90;
+      if (nx < 200 || nx > L - W - 40 || near(nx, 60)) return;
+      extra.push({ x: nx, y0: w.y0, y: w.y0, alive: true, pop: 0 });
+    });
+    waspers = waspers.concat(extra);
+  }
+  // boss armour: on Hard every third hit just clangs off, so bosses take about 50% more hits
+  function hardBlock() {
+    if (!HARD) return false;
+    boss.hc = (boss.hc || 0) + 1;
+    if (boss.hc % 3 !== 2) return false;
+    boss.fl = 40; flash = 4;
+    popups.push({ x: boss.x, y: (boss.y || hill(boss.x)) - 40, t: 40, g: 1, s: "CLANG!" });
+    return true;
+  }
+  function hardHint() {
+    text("H: HARD MODE " + (HARD ? "ON" : "OFF"), W - 6, 12, 9, HARD ? "#ff5050" : "#c8d0e0", "right");
+  }
   // PRISM SHARDS: 7 per run, won in bonus stages; cheat keeps all 7 (typed PRISM on the title screen)
   var shards = 0, cheat = false, SP = null, endGate = false, skygate = null;
   var SHARD_COL = ["#ff4a5a", "#ff9a2a", "#ffd23f", "#4ade80", "#38bdf8", "#7c6cff", "#e05cf0"];
@@ -354,6 +407,7 @@
   var QCD = 90, Q_BOX = 17, Q_MECH = 31, Q_RING = 14, SHOCK = 40, POUND_LAG = 18;
   function hitBoss() {
     if (boss.fl) return; // one hit per invulnerability window, whatever the attack
+    if (hardBlock()) return;
     boss.hp--; boss.fl = 40; flash = 4;
     if (!boss.hp) { boss.st = 2; score += boss.mech ? 2000 : 1000; boss.bolts = []; if (boss.mech) { boss.waves = []; boss.fl = 0; boss.tel = 0; boss.dt = 0; } }
   }
@@ -522,7 +576,7 @@
   }
   function finishRace() {
     if (race.res === 1) {
-      endGate = p.sparks >= 50 && shards < 7;
+      endGate = p.sparks >= (HARD ? 25 : 50) && shards < 7;
       state = endGate ? "clear" : "win";
       var secs = Math.floor(frames / 60);
       bonus = Math.max(0, 5000 - secs * 50) + p.sparks * 100;
@@ -611,7 +665,7 @@
 
     // PRISM FORM: 7 shards + 50 sparks, C or Shift; drains a spark a second, reverts at 0
     if (pressed.c && !p.prism) {
-      if (shards >= 7 && p.sparks >= 50) {
+      if (shards >= 7 && p.sparks >= (HARD ? 25 : 50)) {
         p.prism = true; p.drain = 0; flash = 12; shake = 8;
         rings.push({ x: p.x, y: p.y - 8 * p.g, t: 24 });
         popups.push({ x: p.x, y: p.y - 34 * p.g, t: 60, g: p.g, s: "PRISM FORM!" });
@@ -837,7 +891,7 @@
     // enemies
     enemies.forEach(function (e) {
       if (!e.alive) { if (e.pop) e.pop--; return; }
-      e.x += e.d * 0.5;
+      e.x += e.d * 0.5 * HSPD;
       if (e.x < e.a) e.d = 1; if (e.x > e.b) e.d = -1;
       var ey = e.c ? ceilY(e.x) + 6 : hill(e.x) - 6;
       if (Math.abs(p.x - e.x) < 14 && Math.abs(p.y - 8 * p.g - ey) < 13) {
@@ -850,7 +904,7 @@
     // waspers
     waspers.forEach(function (w) {
       if (!w.alive) { if (w.pop) w.pop--; return; }
-      w.y = w.y0 + Math.sin(tick * 0.04 + w.x) * 12;
+      w.y = w.y0 + Math.sin(tick * 0.04 * HSPD + w.x) * 12;
       if (Math.abs(p.x - w.x) < 13 && Math.abs(pc - w.y) < 13) {
         if (p.quill || p.star || p.prism) { w.alive = false; w.pop = 20; score += 100; }
         else if (atk) { w.alive = false; w.pop = 20; score += 100; p.vy = (keys.j ? -5 : -3.5) * p.g; p.jumping = true; p.ground = false; p.plat = null; p.dive = false; }
@@ -858,7 +912,9 @@
       }
     });
     // PROFESSOR GEARBOLT
-    var B = boss;
+    var B = boss, bReps = 1;
+    if (HARD && B.st === 1 && !deadT) { hAcc += 0.3; if (hAcc >= 1) { hAcc -= 1; bReps = 2; } }
+    for (var bR = 0; bR < bReps; bR++) {
     if (!B.st && p.x >= L - W + 170) B.st = 1;
     if (B.mech) mechStep(pc, atk);
     else if (B.st === 1) {
@@ -868,7 +924,7 @@
       if (!B.fl && Math.abs(p.x - B.x) < 20 && Math.abs(pc - B.y) < 18) {
         if (p.quill && !p.qHit) { p.qHit = true; hitBoss(); p.vx = p.x < B.x ? -2 : 2; }
         else if (atk) {
-          B.hp--; B.fl = 40; flash = 4; p.vy = -3.5 * p.g; p.vx = p.x < B.x ? -2 : 2; p.jumping = true; p.ground = false; p.plat = null; p.dive = false;
+          if (!hardBlock()) B.hp--; B.fl = 40; flash = 4; p.vy = -3.5 * p.g; p.vx = p.x < B.x ? -2 : 2; p.jumping = true; p.ground = false; p.plat = null; p.dive = false;
           if (!B.hp) { B.st = 2; score += 1000; B.bolts = []; }
         } else hurt(B.x);
       }
@@ -880,6 +936,7 @@
       if (Math.abs(p.x - b.x) < 8 && Math.abs(pc - b.y) < 10) hurt(b.x);
       return b.n < 5 && b.x > L - W && b.x < L;
     });
+    }
     // sparks
     sparks.forEach(function (s) {
       if (!s.got && Math.abs(p.x - s.x) < 11 && Math.abs(p.y - 8 * p.g - s.y) < 12) { s.got = true; p.sparks++; score += 10; }
@@ -894,7 +951,7 @@
     if (p.x >= goal.x && !goal.done && B.st === 3) {
       goal.done = true;
       if (race) { race.res = 1; race.endT = 170; return; }
-      endGate = p.sparks >= 50 && shards < 7;
+      endGate = p.sparks >= (HARD ? 25 : 50) && shards < 7;
       state = zone < LEVELS.length - 1 || endGate ? "clear" : "win";
       var secs = Math.floor(frames / 60);
       bonus = Math.max(0, 5000 - secs * 50) + p.sparks * 100;
@@ -1778,6 +1835,7 @@
     circ(ICON[ch], 14, 226, 5); circ(ICON2[ch], 16, 227, 2);
     text(NAMES[ch] + " x " + lives, 24, 230, 9, "#fff");
     text(LV.tag, W / 2, 14, 9, "#ffd23f", "center");
+    if (HARD) { rect("#c81e1e", 8, 207, 34, 12); text("HARD", 25, 216, 9, "#fff", "center"); }
     if (banner) {
       text(LV.tag, W / 2, 96, 18, "#ffd23f", "center");
       text(LV.name, W / 2, 114, 11, "#fff", "center");
@@ -1826,7 +1884,7 @@
     if (p.shoes) pw("f", "SPEED", "#ff8a6a", p.shoes);
     if (p.star) pw("i", "INVINCIBLE", hue(0, 72), p.star);
     if (p.prism) pw("i", "PRISM FORM", hue(0, 72));
-    else if (shards >= 7 && p.sparks >= 50 && (tick >> 4) & 1) text("C / SHIFT: PRISM FORM", 8, 66, 9, hue(0, 72));
+    else if (shards >= 7 && p.sparks >= (HARD ? 25 : 50) && (tick >> 4) & 1) text("C / SHIFT: PRISM FORM", 8, 66, 9, hue(0, 72));
   }
 
   // extra title-screen hint lines added by later features
@@ -1841,6 +1899,11 @@
 
   function inMenu() { return state === "title" || state === "controls" || state === "select"; }
   function draw() {
+    draw0();
+    if (inMenu()) hardHint();
+    if (state === "win" && HARD) text("HARD CLEAR!", W / 2, 22, 14, (tick >> 3) & 1 ? "#ff4040" : "#ffd23f", "center");
+  }
+  function draw0() {
     if (state === "special" || state === "sresult") return drawSpecial();
     if (state === "title") return drawTitle();
     drawBG();
@@ -1856,7 +1919,7 @@
     waspers.forEach(drawWasper);
     drawBoss();
     if (skygate && !skygate.used && shards < 7) drawPrismGate(skygate.x - camX, skygate.y + Math.sin(tick * 0.05) * 2, 16);
-    if (p.sparks >= 50 && shards < 7 && (state === "play" || state === "clear")) drawPrismGate(goal.x - camX, hill(goal.x) - 76, 20);
+    if (p.sparks >= (HARD ? 25 : 50) && shards < 7 && (state === "play" || state === "clear")) drawPrismGate(goal.x - camX, hill(goal.x) - 76, 20);
     drawGoal();
     if (race && !inMenu()) drawRace();
     rings.forEach(function (r) {

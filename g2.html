@@ -157,6 +157,43 @@
 
   // ---------------------------------------------------------------- input
   var keys = {}, pressed = {}, cheatBuf = "", drag = false;
+  // HARD MODE: H on the title / menus; saved in localStorage "pr_hard"; the hub passes its setting in PRC.hard
+  var HARD = false, HSPD = 1, hAcc = 0, HMENU = ["title", "controls", "select"];
+  try { HARD = localStorage.getItem("pr_hard") === "1"; } catch (e) {}
+  try { if (window.PRC && PRC.hard != null) HARD = !!PRC.hard; } catch (e) {}
+  function setHard(v) {
+    HARD = !!v;
+    try { localStorage.setItem("pr_hard", HARD ? "1" : "0"); } catch (e) {}
+    try { if (window.PRC && PRC.setHard) PRC.setHard(HARD); } catch (e) {}
+  }
+  // end of buildLevel: a twin for every beetle on its own track (opposite swing), half the sparks and item boxes.
+  // Track geometry is never touched.
+  function hardLevel() {
+    HSPD = HARD ? 1.3 : 1; hAcc = 0;
+    if (!HARD) return;
+    rings = rings.filter(function (r, i) { return i % 2 === 0; });
+    items = items.filter(function (it, i) { return i % 2 === 0; });
+    var tw = [];
+    enemies.forEach(function (e) {
+      if (e.r < 1.2) return;
+      var c = {}; for (var k in e) c[k] = e[k];
+      c.t = e.t + Math.PI; tw.push(c);
+    });
+    enemies = enemies.concat(tw);
+  }
+  // boss armour: on Hard every third hit clangs off, so bosses take about 50% more hits
+  function hardArmor(o) {
+    if (!HARD) return false;
+    o.hc = (o.hc || 0) + 1;
+    if (o.hc % 3 !== 2) return false;
+    popup("CLANG! ARMOR HELD");
+    return true;
+  }
+  // bosses think and shoot about 30% faster on Hard
+  function hardBossExtra() {
+    if (!HARD || !boss || boss.dead || deathT) return;
+    hAcc += 0.3; if (hAcc >= 1) { hAcc -= 1; stepBoss(); }
+  }
   var MAP = { ArrowLeft: "tl", KeyA: "l", ArrowRight: "tr", KeyD: "r", ArrowUp: "u", KeyW: "u", ArrowDown: "dn", KeyS: "dn",
     Space: "j", KeyJ: "j", KeyZ: "j", Enter: "e", ShiftLeft: "roll", ShiftRight: "roll", ControlLeft: "roll", ControlRight: "roll", KeyC: "roll",
     KeyX: "x", KeyK: "x", KeyV: "su", KeyU: "su", KeyQ: "cl", KeyE: "cr", KeyM: "m", KeyP: "p", Escape: "esc" };
@@ -167,6 +204,7 @@
       if (cheatBuf === "PRISM") { cheatBuf = ""; setUnlocked(); cheatMsg = 150; snd("item"); }
       if (cheatBuf === "ULTRA") { cheatBuf = ""; shards = 15; try { localStorage.setItem("pr2_shards", "15"); } catch (e2) {} cheatMsg2 = 150; snd("item"); }
     }
+    if (e.code === "KeyH" && !e.repeat && HMENU.indexOf(state) >= 0) { setHard(!HARD); snd("tick"); e.preventDefault(); return; }
     var m = MAP[e.code]; if (!m) return;
     e.preventDefault(); if (!keys[m]) pressed[m] = true; keys[m] = true;
   });
@@ -329,6 +367,7 @@
       [[-24, -22, 22, 70], [22, 24, 22, 70], [-24, 24, 68, 70], [-24, -4, 22, 24], [4, 24, 22, 24], [-6, -4, -2, 24], [4, 6, -2, 24], [-6, 6, -2, 0]].forEach(function (w) { addBox(w[0], w[1], w[2], w[3], 8, 8, "x", 0, 1, 1, "wall"); });
       boss = { x: 0, y: 6, z: 52, hp: 6, t: 0, inv: 0, dead: 0, ph: 0, shots: [], wave: -1 };
     }
+    hardLevel();
     var x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
     boxes.forEach(function (b) { x0 = Math.min(x0, b.x0); x1 = Math.max(x1, b.x1); z0 = Math.min(z0, b.z0); z1 = Math.max(z1, b.z1); });
     var mt = 0; boxes.forEach(function (b) { mt = Math.min(mt, b.ya, b.yb); }); BASE = Math.min(0, mt + 7) - 16; PIT = Math.min(-14, mt - 7);
@@ -403,7 +442,7 @@
     if (!deathT && dd < 2.4 && Math.abs(dy) < 2) {
       var push = Math.atan2(p.x - b.x, p.z - b.z);
       if (b.ph === 2 && !b.inv && (attacking() || p.vy < 0)) {
-        b.hp--; b.inv = 50; shake = 10; snd("pop"); burst(b.x, b.y + 1.5, b.z, [1, 0.9, 0.3], 16); popup(b.hp ? "HIT!  " + b.hp + " TO GO" : "GEARBOSS DOWN!");
+        if (!hardArmor(b)) b.hp--; b.inv = 50; shake = 10; snd("pop"); burst(b.x, b.y + 1.5, b.z, [1, 0.9, 0.3], 16); popup(b.hp ? "HIT!  " + b.hp + " TO GO" : "GEARBOSS DOWN!");
         p.vy = 0.42; p.ground = false; p.box = null; p.jumping = true; p.h = push; p.s = 0.3; p.pound = false; p.dive = false; p.dash = 0;
         if (!b.hp) { b.dead = 1; b.shots = []; b.wave = -1; score += 1000; } else b.t += cyc - 12 - ph;
       } else if (b.ph === 2) { p.h = push; p.s = 0.25; }
@@ -483,7 +522,7 @@
       if (f.t % Math.max(24, 50 - hpF * 3) === 0) { var L = Math.max(4, f.bdz - f.dz); f.shots.push({ x: f.bx, y: f.by, dz: f.bdz, vx: (f.x - f.bx) / L * 0.5, vy: (f.y - f.by) / L * 0.5 }); snd("dash"); }
     }
     for (var i = f.shots.length - 1; i >= 0; i--) {
-      var s = f.shots[i]; s.x += s.vx; s.y += s.vy; s.dz -= 0.5;
+      var s = f.shots[i]; s.x += s.vx * HSPD; s.y += s.vy * HSPD; s.dz -= 0.5 * HSPD;
       if (Math.abs(s.dz - f.dz) < 1 && Math.hypot(s.x - f.x, s.y - f.y) < 1.1) { f.shots.splice(i, 1); if (f.dash) burst(0, 0, 0, [1, 1, 1], 0); else hurtF(); continue; }
       if (s.dz < -6) f.shots.splice(i, 1);
     }
@@ -495,7 +534,7 @@
     }
     if (Math.abs(f.bdz - f.dz) < 2.5 && Math.hypot(f.bx - f.x, f.by - f.y) < 2.6) {
       if (f.dash && !f.binv) {
-        f.hp--; f.binv = 60; shake = 12; snd("pop"); popup(f.hp ? "DIRECT HIT!  " + f.hp + " TO GO" : "VOID RAPTOR DEFEATED!");
+        if (!hardArmor(f)) f.hp--; f.binv = 60; shake = 12; snd("pop"); popup(f.hp ? "DIRECT HIT!  " + f.hp + " TO GO" : "VOID RAPTOR DEFEATED!");
         if (f.dash < 15) f.dash = 15;
         if (sw > 330) f.t += 420 - sw;
         if (!f.hp) { f.dead = 1; f.shots = []; }
@@ -543,7 +582,7 @@
     var c = CH[ch], q = p;
     if (q.inv > 0) q.inv--; if (q.star > 0) q.star--; if (q.shoes > 0) q.shoes--; if (q.qcd > 0) q.qcd--; if (q.quillT > 0) q.quillT--;
     if (pressed.su && !q.ultra) {
-      if (shards === 15 && q.sparks >= 50) { q.ultra = true; snd("item"); popup("ULTRA " + c.n + "!"); burst(q.x, q.y + 0.8, q.z, [1, 0.85, 0.2], 24); }
+      if (shards === 15 && q.sparks >= (HARD ? 25 : 50)) { q.ultra = true; snd("item"); popup("ULTRA " + c.n + "!"); burst(q.x, q.y + 0.8, q.z, [1, 0.85, 0.2], 24); }
       else { popup(shards === 15 ? "ULTRA NEEDS 50 SPARKS" : "ULTRA NEEDS ALL 4 SHARDS"); snd("no"); }
     }
     if (q.ultra) {
@@ -672,7 +711,7 @@
     }
     enemies.forEach(function (e) {
       if (!e.alive) return;
-      e.t += 0.025; var sw = Math.sin(e.t);
+      e.t += 0.025 * HSPD; var sw = Math.sin(e.t);
       e.x = e.bx + e.px * sw * e.r; e.z = e.bz + e.pz * sw * e.r;
       e.face = Math.atan2(e.px * Math.cos(e.t), e.pz * Math.cos(e.t)); e.y = floorTop(e.x, e.z, 1e9);
       if (!deathT && near(e.x, e.y + 0.5, e.z, 1.3)) {
@@ -716,7 +755,7 @@
     var secs = Math.floor(time / 60), tb = secs < 60 ? 5000 : secs < 90 ? 3000 : secs < 120 ? 1000 : 500, sb = p.sparks * 100;
     if (!unlocked) { setUnlocked(); newUnlock = true; }
     saveZone(Math.min(ZONES.length - 1, zi + 1));
-    spGo = zi < 4 && p.sparks >= 40 && !(shards & (1 << zi));
+    spGo = zi < 4 && p.sparks >= (HARD ? 20 : 40) && !(shards & (1 << zi));
     res = { secs: secs, tb: tb, sb: sb }; score += tb + sb; state = "results"; snd("goal");
   }
   function stepCam() {
@@ -771,7 +810,7 @@
         stepMovers(); stepWorld(); return;
       }
       time++; if (zoneCard) zoneCard--;
-      stepMovers(); if (p.launch) stepLaunch(); else stepPlayer(); stepWorld(); stepBoss(); stepCam();
+      stepMovers(); if (p.launch) stepLaunch(); else stepPlayer(); stepWorld(); stepBoss(); hardBossExtra(); stepCam();
     }
   }
 
@@ -1060,6 +1099,12 @@
   }
   function fmtTime(t) { var s = Math.floor(t / 60); return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2); }
   function drawUI() {
+    drawUI0();
+    if (HMENU.indexOf(state) >= 0) txt("H: HARD MODE " + (HARD ? "ON" : "OFF"), VW - 6, 12, 9, HARD ? "#ff5050" : "#c8d0e0", "right");
+    if (HARD && (state === "play" || state === "final") && !paused) { cx.fillStyle = "#c81e1e"; cx.fillRect(8, 207, 34, 13); txt("HARD", 25, 217, 9, "#ffffff", "center"); }
+    if (HARD && (state === "ending" || state === "trueend")) txt("HARD CLEAR!", VW / 2, 50, 16, (tick >> 3) & 1 ? "#ff4040" : "#ffd23f", "center");
+  }
+  function drawUI0() {
     cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, W, H); cx.setTransform(k, 0, 0, k, 0, 0);
     var mx = VW / 2, blink = (tick >> 5) & 1;
     if (state === "title") {
@@ -1148,7 +1193,7 @@
     txt(CH[ch].n + "  x " + Math.max(0, lives), 8, 232, 10, "#ffffff");
     var py = 16;
     if (p.ultra) { txt("ULTRA!", VW - 8, py, 10, "hsl(" + (tick * 8 % 360) + ",100%,65%)", "right"); py += 12; }
-    else if (shards === 15 && p.sparks >= 50 && state === "play") { txt("V: GO ULTRA", VW - 8, py, 9, blink ? "#ffd23f" : "#ffffff", "right"); py += 12; }
+    else if (shards === 15 && p.sparks >= (HARD ? 25 : 50) && state === "play") { txt("V: GO ULTRA", VW - 8, py, 9, blink ? "#ffd23f" : "#ffffff", "right"); py += 12; }
     if (boss) {
       txt("GEARBOSS 3000", mx, 14, 9, "#ffd23f", "center");
       for (var bi = 0; bi < 6; bi++) { cx.fillStyle = bi < boss.hp ? "#ff5030" : "#402020"; cx.fillRect(mx - 39 + bi * 13, 19, 11, 6); }
